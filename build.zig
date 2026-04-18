@@ -45,18 +45,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
-    mod.addIncludePath(b.path("libs/metal-cpp"));
-    mod.addIncludePath(b.path("src")); // So it finds metal_bridge.h
-    mod.addCSourceFile(.{
-        .file = b.path("src/metal_cpp.cpp"),
-        .flags = &.{"-std=c++17"},
-    });
-
-    mod.addCSourceFile(.{
-        .file = b.path("src/metal_bridge.cpp"),
-        .flags = &.{"-std=c++17"},
-    });
-
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
     // to the module defined above, it's sometimes preferable to split business
@@ -78,9 +66,9 @@ pub fn build(b: *std.Build) void {
         .root_module = mod,
     });
 
-    exe.linkFramework("Metal");
+    exe.linkFramework("AppKit");
     exe.linkFramework("Foundation");
-    exe.linkFramework("QuartzCore");
+    exe.linkSystemLibrary("objc");
 
     exe.linkLibC();
     exe.linkLibCpp();
