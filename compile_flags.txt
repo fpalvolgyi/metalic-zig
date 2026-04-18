@@ -1,0 +1,2 @@
+-I/Users/fpalvolgyi/dev/repos/zig/metal_kernel/libs/metal-cpp
+-I/Users/fpalvolgyi/dev/repos/zig/metal_kernel/src
