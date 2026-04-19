@@ -68,10 +68,18 @@ pub fn build(b: *std.Build) void {
 
     exe.linkFramework("AppKit");
     exe.linkFramework("Foundation");
+    exe.linkFramework("Metal");
+    exe.linkFramework("QuartzCore"); // For CAMetalLayer
     exe.linkSystemLibrary("objc");
 
     exe.linkLibC();
     exe.linkLibCpp();
+
+    const compile_shaders = b.addSystemCommand(&.{
+        "xcrun", "-sdk",             "macosx",           "metal",
+        "-o",    "default.metallib", "src/kernel.metal",
+    });
+    exe.step.dependOn(&compile_shaders.step);
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

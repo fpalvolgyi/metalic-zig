@@ -1,5 +1,6 @@
 const std = @import("std");
 const appkit = @import("appkit.zig");
+const metal = @import("metal.zig");
 
 pub fn main() !void {
     const my_app = appkit.App.init();
@@ -8,6 +9,12 @@ pub fn main() !void {
     const my_window = appkit.Window.init(win_rect);
 
     my_window.setTitle("Metal computer");
+
+    const device = try metal.Device.init();
+    _ = device.newCommandQueue();
+
+    _ = metal.setupMetalLayer(my_window, device);
+
     my_window.show();
 
     my_app.run();
