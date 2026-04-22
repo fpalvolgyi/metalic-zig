@@ -8,15 +8,41 @@ pub const Vertex = extern struct {
 
 extern "c" fn MTLCreateSystemDefaultDevice() ?*anyopaque;
 
+// Signature: (self, _cmd, pointer, length, options)
+const NewBufferFn = *const fn (objc.ID, ?*objc.Sel, ?*const anyopaque, usize, usize) callconv(.c) objc.ID;
+const msgSendNewBuffer: NewBufferFn = @ptrCast(&objc.objc_msgSend);
+
 pub fn createBuffer(device: objc.ID, data: []const Vertex) objc.ID {
     const sel = objc.sel_registerName("newBufferWithBytes:length:options:");
 
-    // Signature: (self, _cmd, pointer, length, options)
-    const NewBufferFn = *const fn (objc.ID, ?*objc.Sel, ?*const anyopaque, usize, usize) callconv(.c) objc.ID;
-    const msgSendNewBuffer: NewBufferFn = @ptrCast(&objc.objc_msgSend);
-
     // Options 0 = MTLResourceStorageModeShared (Visible to both CPU and GPU)
     return msgSendNewBuffer(device, sel, data.ptr, data.len * @sizeOf(Vertex), 0);
+}
+
+/// When using this function allocate memory aligned to 4096 bytes (standard macOS page size)
+/// const vertex_count = 1000;
+/// const raw_mem = try std.heap.page_allocator.alignedAlloc(
+///     Vertex,
+///     4096,
+///     vertex_count
+/// );
+/// defer std.heap.page_allocator.free(raw_mem);
+/// const buffer = createBufferNoCopy(device.ptr, raw_mem);
+///
+/// The function passes null as the deallocation handler, which requires to manually release the allocated memory
+pub fn createBufferNoCopy(device: objc.ID, data: []const Vertex) objc.ID {
+    const sel = objc.sel_registerName("newBufferWithBytesNoCopy:length:options:deallocator:");
+
+    // Signature: (self, _cmd, pointer, length, options, block)
+    const NoCopyFn = *const fn (objc.ID, ?*objc.Sel, ?*const anyopaque, usize, usize, ?*anyopaque) callconv(.c) objc.ID;
+
+    const msgSendNoCopy: NoCopyFn = @ptrCast(&objc.objc_msgSend);
+
+    // Options:
+    // 0 = MTLResourceStorageModeShared
+    // (Required for NoCopy on macOS/iOS)
+    return msgSendNoCopy(device, sel, data.ptr, data.len * @sizeOf(Vertex), 0, null // We pass null to handle deallocation manually in Zig
+    );
 }
 
 pub fn getBufferPointer(buffer: objc.ID) [*]Vertex {
@@ -37,6 +63,11 @@ pub const Device = struct {
 
     pub fn newCommandQueue(self: Device) objc.ID {
         const sel = objc.sel_registerName("newCommandQueue");
+        return objc.objc_msgSend(self.ptr, sel);
+    }
+
+    pub fn newDefaultLibrary(self: Device) objc.ID {
+        const sel = objc.sel_registerName("newDefaultLibrary");
         return objc.objc_msgSend(self.ptr, sel);
     }
 };
@@ -65,4 +96,12 @@ pub fn setupMetalLayer(window: appkit.Window, device: Device) void {
 
     // 4. Tell the view it MUST use a layer
     msgSendSetBool(view, objc.sel_registerName("setWantsLayer:"), 1);
+}
+
+pub fn create_render_pipeline(device: Device){
+    const objc.ID = device.newDefaultLibrary();
+
+    //Load vertex and fragment shader functions
+    const NewFunctionFn = *const fn (?*anyopaque, ?*objc.Sel, ?*anyopaque) callconv(.c) objc.ID;
+
 }
