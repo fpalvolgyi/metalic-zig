@@ -11,6 +11,7 @@ pub fn main() !void {
     my_window.setTitle("Metal computer");
 
     const device = try metal.Device.init();
+    metal.create_render_pipeline(device);
     _ = device.newCommandQueue();
 
     _ = metal.setupMetalLayer(my_window, device);

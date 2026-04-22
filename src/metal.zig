@@ -70,6 +70,37 @@ pub const Device = struct {
         const sel = objc.sel_registerName("newDefaultLibrary");
         return objc.objc_msgSend(self.ptr, sel);
     }
+
+    pub fn newRenderPipelineState(self: Device) objc.ID{
+        const sel = objc.sel_registerName("newRenderPipelineState");
+        return objc.objc_msgSend(self.ptr, sel);
+    }
+};
+
+pub const Library = struct {
+    ptr: objc.ID,
+
+    pub fn init(device: Device) Library {
+        return .{ .ptr = device.newDefaultLibrary()};
+    }
+
+    pub fn newFunction(self: Library, name: [:0]const u8) objc.ID {
+        const name_ns = objc.stringWithUTF8String(name);
+
+        const sel = objc.sel_registerName("newFunctionWithName:");
+        const NewFunctionFn = *const fn (?*anyopaque, ?*objc.Sel, ?*anyopaque) callconv(.c) objc.ID;
+        const msgNewFunction: NewFunctionFn = @ptrCast(&objc.objc_msgSend);
+        return msgNewFunction(self.ptr, sel, name_ns);
+    }
+};
+
+pub const RenderPipelineDescriptor = struct {
+    ptr: objc.ID,
+
+    pub fn new() objc.ID{
+        const renderPipelineDescriptorClass = objc.objc_getClass("MTLRenderPipelineDescriptor");
+        return objc.objc_msgSend(renderPipelineDescriptorClass, objc.sel_registerName("new"));
+    }
 };
 
 pub fn setupMetalLayer(window: appkit.Window, device: Device) void {
@@ -98,10 +129,7 @@ pub fn setupMetalLayer(window: appkit.Window, device: Device) void {
     msgSendSetBool(view, objc.sel_registerName("setWantsLayer:"), 1);
 }
 
-pub fn create_render_pipeline(device: Device){
-    const objc.ID = device.newDefaultLibrary();
-
-    //Load vertex and fragment shader functions
-    const NewFunctionFn = *const fn (?*anyopaque, ?*objc.Sel, ?*anyopaque) callconv(.c) objc.ID;
-
+pub fn create_render_pipeline(device: Device) void{
+    const library = Library.init(device);
+    _ = library.newFunction("add_vectors");
 }

@@ -13,7 +13,7 @@ pub extern "c" fn sel_registerName(name: [*c]const u8) ?*Sel;
 // On x86_64, you'd need different variants for different return types.
 pub extern "c" fn objc_msgSend(self: ?*anyopaque, op: ?*Sel, ...) ?*anyopaque;
 
-pub fn stringWithUTF8String(text: [:0]const u8) ?*anyopaque {
+pub fn stringWithUTF8String(text: [:0]const u8) ID {
     const cls_string = objc_getClass("NSString");
     const sel_utf8 = sel_registerName("stringWithUTF8String:");
 
