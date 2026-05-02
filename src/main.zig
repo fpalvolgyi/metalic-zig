@@ -11,10 +11,15 @@ pub fn main() !void {
     my_window.setTitle("Metal computer");
 
     const device = try metal.Device.init();
-    metal.create_render_pipeline(device);
-    _ = device.newCommandQueue();
 
     _ = metal.setupMetalLayer(my_window, device);
+
+    _ = try metal.create_render_pipeline(device);
+    const command_queue = device.newCommandQueue();
+    const command_buffer = command_queue.commandBuffer();
+    const render_pass_descriptor = metal.RenderPassDescriptor.renderPassDescriptor();
+
+    _ = command_buffer.renderCommandEncoder(render_pass_descriptor);
 
     my_window.show();
 

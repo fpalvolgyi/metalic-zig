@@ -1,5 +1,6 @@
 const objc = @import("obj_runtime.zig");
 const appkit = @import("appkit.zig");
+const std = @import("std");
 
 pub const Vertex = extern struct {
     position: [2]f32,
@@ -61,9 +62,9 @@ pub const Device = struct {
         return .{ .ptr = dev };
     }
 
-    pub fn newCommandQueue(self: Device) objc.ID {
+    pub fn newCommandQueue(self: Device) CommandQueue {
         const sel = objc.sel_registerName("newCommandQueue");
-        return objc.objc_msgSend(self.ptr, sel);
+        return .{ .ptr = objc.objc_msgSend(self.ptr, sel) };
     }
 
     pub fn newDefaultLibrary(self: Device) objc.ID {
@@ -71,9 +72,36 @@ pub const Device = struct {
         return objc.objc_msgSend(self.ptr, sel);
     }
 
-    pub fn newRenderPipelineState(self: Device) objc.ID{
-        const sel = objc.sel_registerName("newRenderPipelineState");
-        return objc.objc_msgSend(self.ptr, sel);
+    pub fn newRenderPipelineState(self: Device, descriptor: RenderPipelineDescriptor) !RenderPipelineState {
+        const sel = objc.sel_registerName("newRenderPipelineStateWithDescriptor:error:");
+
+        const NewFn = *const fn (objc.ID, ?*objc.Sel, objc.ID, ?*objc.ID) callconv(.c) objc.ID;
+        const msgSend: NewFn = @ptrCast(&objc.objc_msgSend);
+
+        var err_ptr: objc.ID = null;
+        const state_ptr = msgSend(self.ptr, sel, descriptor.ptr, &err_ptr);
+
+        if (state_ptr == null) {
+            if (err_ptr) |err_id| {
+                const err = Error{ .ptr = err_id };
+                std.debug.print("Metal Pipeline Error: {s}\n", .{err.localizedDescription()});
+            }
+            return error.PipelineStateCreationFailed;
+        }
+
+        return .{ .ptr = state_ptr };
+    }
+};
+
+pub const Error = struct {
+    ptr: objc.ID,
+
+    pub fn localizedDescription(self: Error) [:0]const u8 {
+        const sel = objc.sel_registerName("localizedDescription");
+        const ns_str = objc.objc_msgSend(self.ptr, sel);
+        const sel_utf8 = objc.sel_registerName("UTF8String");
+        const c_str = objc.objc_msgSend(ns_str, sel_utf8);
+        return std.mem.span(@as([*c]const u8, @ptrCast(c_str)));
     }
 };
 
@@ -81,7 +109,7 @@ pub const Library = struct {
     ptr: objc.ID,
 
     pub fn init(device: Device) Library {
-        return .{ .ptr = device.newDefaultLibrary()};
+        return .{ .ptr = device.newDefaultLibrary() };
     }
 
     pub fn newFunction(self: Library, name: [:0]const u8) objc.ID {
@@ -97,9 +125,74 @@ pub const Library = struct {
 pub const RenderPipelineDescriptor = struct {
     ptr: objc.ID,
 
-    pub fn new() objc.ID{
+    pub fn new() RenderPipelineDescriptor {
         const renderPipelineDescriptorClass = objc.objc_getClass("MTLRenderPipelineDescriptor");
-        return objc.objc_msgSend(renderPipelineDescriptorClass, objc.sel_registerName("new"));
+        return .{ .ptr = objc.objc_msgSend(renderPipelineDescriptorClass, objc.sel_registerName("new")) };
+    }
+
+    pub fn setVertexFunction(self: RenderPipelineDescriptor, function: objc.ID) void {
+        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("setVertexFunction:"), function);
+    }
+
+    pub fn setFragmentFunction(self: RenderPipelineDescriptor, function: objc.ID) void {
+        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("setFragmentFunction:"), function);
+    }
+
+    pub fn getColorAttachemnts(self: RenderPipelineDescriptor) RenderPipelineColorAttachmentDescriptorArray {
+        const array_ptr = objc.objc_msgSend(self.ptr, objc.sel_registerName("colorAttachments"));
+        return .{ .ptr = array_ptr };
+    }
+};
+
+pub const RenderPipelineColorAttachmentDescriptorArray = struct {
+    ptr: objc.ID,
+
+    /// Equivalent to desc->colorAttachments()->object(index)
+    pub fn get(self: RenderPipelineColorAttachmentDescriptorArray, index: usize) RenderPipelineColorAttachmentDescriptor {
+        const sel = objc.sel_registerName("objectAtIndexedSubscript:");
+
+        // Explicit cast for the return and the index parameter
+        const GetObjFn = *const fn (objc.ID, ?*objc.Sel, usize) callconv(.c) objc.ID;
+        const msgSendGet: GetObjFn = @ptrCast(&objc.objc_msgSend);
+
+        return .{ .ptr = msgSendGet(self.ptr, sel, index) };
+    }
+};
+
+pub const PixelFormat = enum(usize) {
+    invalid = 0,
+
+    // Common 8-bit formats
+    a8_unorm = 1,
+    r8_unorm = 10,
+    r8_sint = 14,
+
+    // The most common formats for CAMetalLayer
+    rgba8_unorm = 70,
+    rgba8_unorm_srgb = 71,
+    bgra8_unorm = 80,
+    bgra8_unorm_srgb = 81,
+
+    // 16-bit / HDR formats
+    rgba16_float = 115,
+
+    // Depth and Stencil
+    depth32_float = 252,
+    stencil8 = 253,
+    depth32_float_stencil8 = 260,
+};
+
+pub const RenderPipelineColorAttachmentDescriptor = struct {
+    ptr: objc.ID,
+
+    pub fn setPixelFormat(self: RenderPipelineColorAttachmentDescriptor, format: PixelFormat) void {
+        const sel = objc.sel_registerName("setPixelFormat:");
+
+        // Cast for the setter
+        const SetFormatFn = *const fn (objc.ID, ?*objc.Sel, usize) callconv(.c) void;
+        const msgSend: SetFormatFn = @ptrCast(&objc.objc_msgSend);
+
+        msgSend(self.ptr, sel, @intFromEnum(format));
     }
 };
 
@@ -129,7 +222,46 @@ pub fn setupMetalLayer(window: appkit.Window, device: Device) void {
     msgSendSetBool(view, objc.sel_registerName("setWantsLayer:"), 1);
 }
 
-pub fn create_render_pipeline(device: Device) void{
+const RenderPipelineState = struct {
+    ptr: objc.ID,
+};
+
+pub const CommandQueue = struct {
+    ptr: objc.ID,
+
+    pub fn commandBuffer(self: CommandQueue) CommandBuffer {
+        return .{ .ptr = objc.objc_msgSend(self.ptr, objc.sel_registerName("commandBuffer")) };
+    }
+};
+
+pub const RenderPassDescriptor = struct {
+    ptr: objc.ID,
+
+    pub fn renderPassDescriptor() RenderPassDescriptor {
+        return .{ .ptr = objc.objc_msgSend(null, objc.sel_registerName("renderPassDescriptor")) };
+    }
+};
+
+const CommandBuffer = struct {
+    ptr: objc.ID,
+
+    pub fn renderCommandEncoder(self: CommandBuffer, descriptor: RenderPassDescriptor) RenderCommandEncoder {
+        return .{ .ptr = objc.objc_msgSend(self.ptr, objc.sel_registerName("renderCommandEncoderWithDescriptor:"), descriptor.ptr) };
+    }
+};
+
+const RenderCommandEncoder = struct {
+    ptr: objc.ID,
+};
+
+pub fn create_render_pipeline(device: Device) !RenderPipelineState {
     const library = Library.init(device);
-    _ = library.newFunction("add_vectors");
+    const vertex_shader = library.newFunction("vertexShader");
+    const fragment_shader = library.newFunction("fragmentShader");
+    const pipeline_descriptor = RenderPipelineDescriptor.new();
+    pipeline_descriptor.setVertexFunction(vertex_shader);
+    pipeline_descriptor.setFragmentFunction(fragment_shader);
+    const color_attachments = pipeline_descriptor.getColorAttachemnts();
+    color_attachments.get(0).setPixelFormat(PixelFormat.bgra8_unorm);
+    return device.newRenderPipelineState(pipeline_descriptor);
 }
