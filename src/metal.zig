@@ -245,13 +245,17 @@ pub const RenderPassDescriptor = struct {
 const CommandBuffer = struct {
     ptr: objc.ID,
 
-    pub fn renderCommandEncoder(self: CommandBuffer, descriptor: RenderPassDescriptor) RenderCommandEncoder {
-        return .{ .ptr = objc.objc_msgSend(self.ptr, objc.sel_registerName("renderCommandEncoderWithDescriptor:"), descriptor.ptr) };
+    pub fn renderCommandEncoder(_: CommandBuffer, descriptor: RenderPassDescriptor) RenderCommandEncoder {
+        return .{ .ptr = objc.objc_msgSend(descriptor.ptr, objc.sel_registerName("renderCommandEncoderWithDescriptor:"), descriptor.ptr) };
     }
 };
 
 const RenderCommandEncoder = struct {
     ptr: objc.ID,
+
+    pub fn setRenderPipelineState(self: RenderCommandEncoder, pipelineState: RenderPipelineState) void {
+        objc.objc_msgSend(self.ptr, objc.sel_registerName("setRenderPipelineState:"), pipelineState.ptr);
+    }
 };
 
 pub fn create_render_pipeline(device: Device) !RenderPipelineState {

@@ -87,17 +87,6 @@ pub fn build(b: *std.Build) void {
     // by passing `--prefix` or `-p`.
     b.installArtifact(exe);
 
-    // Create compile flags generator
-    var cflags = compile_flagz.addCompileFlags(b);
-
-    // Add include paths
-    cflags.addIncludePath(b.path("libs/metal-cpp"));
-    cflags.addIncludePath(b.path("src"));
-
-    // Create the build step
-    const cflags_step = b.step("compile-flags", "Generate compile_flags.txt for C/C++ IDE support");
-    cflags_step.dependOn(&cflags.step);
-
     // 1. Define where the metallib is located in your source tree
     // Assuming it's in src/default.metallib
     const metallib_path = b.path("src/default.metallib");
