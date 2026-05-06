@@ -1,6 +1,7 @@
 const std = @import("std");
 const appkit = @import("appkit.zig");
 const metal = @import("metal.zig");
+const objc = @import("obj_runtime.zig");
 
 pub fn main() !void {
     const my_app = appkit.App.init();
@@ -12,6 +13,15 @@ pub fn main() !void {
 
     const device = try metal.Device.init();
 
+    const capture_manager = objc.objc_getClass("MTLCaptureManager");
+    const shared_manager = objc.objc_msgSend(capture_manager, objc.sel_registerName("sharedCaptureManager"));
+
+    const descriptor = metal.CaptureDescriptor.init(device.ptr);
+    var err: objc.ID = null;
+    const startSel = objc.sel_registerName("startCaptureWithDescriptor:error:");
+    const StartFn = *const fn (objc.ID, ?*objc.Sel, objc.ID, ?*objc.ID) callconv(.c) bool;
+    _ = @as(StartFn, @ptrCast(&objc.objc_msgSend))(shared_manager, startSel, descriptor, &err);
+
     const metal_layer = metal.setupMetalLayer(my_window, device);
     const drawable = metal_layer.nextDrawable();
 
@@ -20,7 +30,8 @@ pub fn main() !void {
     const command_buffer = command_queue.commandBuffer();
     const render_pass_descriptor = metal.RenderPassDescriptor.renderPassDescriptor();
     const render_pass_color_attachment_descriptor = render_pass_descriptor.getColorAttachemnts().get(0);
-    render_pass_color_attachment_descriptor.setTexture(drawable.texture());
+    const texture = drawable.texture();
+    render_pass_color_attachment_descriptor.setTexture(texture);
     render_pass_color_attachment_descriptor.setLoadAction(metal.LoadAction.LoadActionClear);
     render_pass_color_attachment_descriptor.setClearColor(.{ .alpha = 1.0, .blue = 42.0 / 255.0, .green = 48.0 / 255.0, .red = 41.0 / 255.0 });
     render_pass_color_attachment_descriptor.setStoreAction(metal.StoreAction.StoreActionStore);
