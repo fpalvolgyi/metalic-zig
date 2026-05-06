@@ -3,54 +3,22 @@ const appkit = @import("appkit.zig");
 const std = @import("std");
 
 pub const Vertex = extern struct {
-    position: [2]f32,
+    position: [3]f32,
     color: [4]f32,
 };
 
 extern "c" fn MTLCreateSystemDefaultDevice() ?*anyopaque;
-
-// Signature: (self, _cmd, pointer, length, options)
-const NewBufferFn = *const fn (objc.ID, ?*objc.Sel, ?*const anyopaque, usize, usize) callconv(.c) objc.ID;
-const msgSendNewBuffer: NewBufferFn = @ptrCast(&objc.objc_msgSend);
-
-pub fn createBuffer(device: objc.ID, data: []const Vertex) objc.ID {
-    const sel = objc.sel_registerName("newBufferWithBytes:length:options:");
-
-    // Options 0 = MTLResourceStorageModeShared (Visible to both CPU and GPU)
-    return msgSendNewBuffer(device, sel, data.ptr, data.len * @sizeOf(Vertex), 0);
-}
-
-/// When using this function allocate memory aligned to 4096 bytes (standard macOS page size)
-/// const vertex_count = 1000;
-/// const raw_mem = try std.heap.page_allocator.alignedAlloc(
-///     Vertex,
-///     4096,
-///     vertex_count
-/// );
-/// defer std.heap.page_allocator.free(raw_mem);
-/// const buffer = createBufferNoCopy(device.ptr, raw_mem);
-///
-/// The function passes null as the deallocation handler, which requires to manually release the allocated memory
-pub fn createBufferNoCopy(device: objc.ID, data: []const Vertex) objc.ID {
-    const sel = objc.sel_registerName("newBufferWithBytesNoCopy:length:options:deallocator:");
-
-    // Signature: (self, _cmd, pointer, length, options, block)
-    const NoCopyFn = *const fn (objc.ID, ?*objc.Sel, ?*const anyopaque, usize, usize, ?*anyopaque) callconv(.c) objc.ID;
-
-    const msgSendNoCopy: NoCopyFn = @ptrCast(&objc.objc_msgSend);
-
-    // Options:
-    // 0 = MTLResourceStorageModeShared
-    // (Required for NoCopy on macOS/iOS)
-    return msgSendNoCopy(device, sel, data.ptr, data.len * @sizeOf(Vertex), 0, null // We pass null to handle deallocation manually in Zig
-    );
-}
 
 pub fn getBufferPointer(buffer: objc.ID) [*]Vertex {
     const sel = objc.sel_registerName("contents");
     const contents = objc.objc_msgSend(buffer, sel);
     return @ptrCast(@alignCast(contents));
 }
+
+pub const MTLStorageMode = enum(usize) { MTLResourceStorageModeShared = 0 };
+pub const PrimitiveType = enum(usize) { Point = 0, Line = 1, LineStrip = 2, Triangle = 3, TriangleStrip = 4 };
+
+pub const Buffer = struct { ptr: objc.ID };
 
 pub const Device = struct {
     ptr: objc.ID,
@@ -60,6 +28,16 @@ pub const Device = struct {
         if (dev == null) return error.NoGpuFound;
 
         return .{ .ptr = dev };
+    }
+
+    pub fn newBufferWithBytesNoCopy(self: Device, data: []const Vertex, storage_mode: MTLStorageMode) Buffer {
+        const sel = objc.sel_registerName("newBufferWithBytesNoCopy:length:options:deallocator:");
+        const NoCopyFn = *const fn (objc.ID, ?*objc.Sel, ?*const anyopaque, usize, usize, ?*anyopaque) callconv(.c) objc.ID;
+        const msgSendNoCopy: NoCopyFn = @ptrCast(&objc.objc_msgSend);
+        // Options:
+        // 0 =
+        // (Required for NoCopy on macOS/iOS)
+        return .{ .ptr = msgSendNoCopy(self.ptr, sel, data.ptr, data.len * @sizeOf(Vertex), @intFromEnum(storage_mode), null) }; // We pass null to handle deallocation manually in Zig
     }
 
     pub fn newCommandQueue(self: Device) CommandQueue {
@@ -196,7 +174,25 @@ pub const RenderPipelineColorAttachmentDescriptor = struct {
     }
 };
 
-pub fn setupMetalLayer(window: appkit.Window, device: Device) void {
+pub const Texture = struct { ptr: objc.ID };
+
+pub const Drawable = struct {
+    ptr: objc.ID,
+
+    pub fn texture(self: Drawable) Texture {
+        return .{ .ptr = objc.objc_msgSend(self.ptr, objc.sel_registerName("texture")) };
+    }
+};
+
+pub const MetalLayer = struct {
+    ptr: objc.ID,
+
+    pub fn nextDrawable(self: MetalLayer) Drawable {
+        return .{ .ptr = objc.objc_msgSend(self.ptr, objc.sel_registerName("nextDrawable")) };
+    }
+};
+
+pub fn setupMetalLayer(window: appkit.Window, device: Device) MetalLayer {
     const win_ptr = window.ptr;
     const dev_ptr = device.ptr;
 
@@ -212,6 +208,15 @@ pub fn setupMetalLayer(window: appkit.Window, device: Device) void {
     // 1. Set the device on the layer
     msgSendSetPtr(layer, objc.sel_registerName("setDevice:"), dev_ptr);
 
+    const sel = objc.sel_registerName("setPixelFormat:");
+
+    // Ensure the third argument is 'usize', not '*PixelFormat' or similar
+    const SetFormatFn = *const fn (objc.ID, ?*objc.Sel, usize) callconv(.c) void;
+    const msgSendSetFormat: SetFormatFn = @ptrCast(&objc.objc_msgSend);
+
+    // Use @intFromEnum to get the raw 80, 81, etc.
+    msgSendSetFormat(layer, sel, @intFromEnum(PixelFormat.bgra8_unorm));
+
     // 2. Get the content view from the window (THIS WAS THE MISSING LINE)
     const view = objc.objc_msgSend(win_ptr, objc.sel_registerName("contentView"));
 
@@ -220,6 +225,8 @@ pub fn setupMetalLayer(window: appkit.Window, device: Device) void {
 
     // 4. Tell the view it MUST use a layer
     msgSendSetBool(view, objc.sel_registerName("setWantsLayer:"), 1);
+
+    return .{ .ptr = layer };
 }
 
 const RenderPipelineState = struct {
@@ -234,11 +241,76 @@ pub const CommandQueue = struct {
     }
 };
 
+pub const LoadAction = enum(usize) {
+    LoadActionDontCare = 0,
+    LoadActionLoad = 1,
+    LoadActionClear = 2,
+};
+
+pub const StoreAction = enum(usize) {
+    StoreActionDontCare = 0,
+    StoreActionStore = 1,
+    StoreActionMultisampleResolve = 2,
+    StoreActionStoreAndMultisampleResolve = 3,
+    StoreActionUnknown = 4,
+    StoreActionCustomSampleDepthStore = 5,
+};
+
+pub const ClearColor = extern struct {
+    alpha: f64,
+    blue: f64,
+    green: f64,
+    red: f64,
+};
+
+pub const RenderPassColorAttachmentDescriptor = struct {
+    ptr: objc.ID,
+
+    pub fn setTexture(self: RenderPassColorAttachmentDescriptor, texture: Texture) void {
+        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("setTexture:"), texture.ptr);
+    }
+
+    pub fn setLoadAction(self: RenderPassColorAttachmentDescriptor, load_action: LoadAction) void {
+        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("setLoadAction:"), @intFromEnum(load_action));
+    }
+
+    pub fn setClearColor(self: RenderPassColorAttachmentDescriptor, clear_color: ClearColor) void {
+        const sel = objc.sel_registerName("setClearColor:");
+        const SetClearFn = *const fn (objc.ID, ?*objc.Sel, ClearColor) callconv(.c) void;
+        const msgSend: SetClearFn = @ptrCast(&objc.objc_msgSend);
+        msgSend(self.ptr, sel, clear_color);
+    }
+
+    pub fn setStoreAction(self: RenderPassColorAttachmentDescriptor, store_action: StoreAction) void {
+        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("setStoreAction:"), @intFromEnum(store_action));
+    }
+};
+
+pub const RenderPassColorAttachmentDescriptorArray = struct {
+    ptr: objc.ID,
+
+    /// Equivalent to desc->colorAttachments()->object(index)
+    pub fn get(self: RenderPassColorAttachmentDescriptorArray, index: usize) RenderPassColorAttachmentDescriptor {
+        const sel = objc.sel_registerName("objectAtIndexedSubscript:");
+
+        // Explicit cast for the return and the index parameter
+        const GetObjFn = *const fn (objc.ID, ?*objc.Sel, usize) callconv(.c) objc.ID;
+        const msgSendGet: GetObjFn = @ptrCast(&objc.objc_msgSend);
+
+        return .{ .ptr = msgSendGet(self.ptr, sel, index) };
+    }
+};
+
 pub const RenderPassDescriptor = struct {
     ptr: objc.ID,
 
     pub fn renderPassDescriptor() RenderPassDescriptor {
         return .{ .ptr = objc.objc_msgSend(null, objc.sel_registerName("renderPassDescriptor")) };
+    }
+
+    pub fn getColorAttachemnts(self: RenderPassDescriptor) RenderPassColorAttachmentDescriptorArray {
+        const array_ptr = objc.objc_msgSend(self.ptr, objc.sel_registerName("colorAttachments"));
+        return .{ .ptr = array_ptr };
     }
 };
 
@@ -248,13 +320,44 @@ const CommandBuffer = struct {
     pub fn renderCommandEncoder(_: CommandBuffer, descriptor: RenderPassDescriptor) RenderCommandEncoder {
         return .{ .ptr = objc.objc_msgSend(descriptor.ptr, objc.sel_registerName("renderCommandEncoderWithDescriptor:"), descriptor.ptr) };
     }
+
+    pub fn presentDrawable(self: CommandBuffer, drawable: objc.ID) void {
+        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("presentDrawable:"), drawable);
+    }
+
+    pub fn commit(self: CommandBuffer) void {
+        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("commit"));
+    }
+
+    pub fn waitUntilCompleted(self: CommandBuffer) void {
+        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("waitUntilCompleted"));
+    }
 };
 
 const RenderCommandEncoder = struct {
     ptr: objc.ID,
 
     pub fn setRenderPipelineState(self: RenderCommandEncoder, pipelineState: RenderPipelineState) void {
-        objc.objc_msgSend(self.ptr, objc.sel_registerName("setRenderPipelineState:"), pipelineState.ptr);
+        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("setRenderPipelineState:"), pipelineState.ptr);
+    }
+
+    pub fn setVertexBuffer(self: RenderCommandEncoder, buffer: Buffer) void {
+        const sel = objc.sel_registerName("setVertexBuffer:offset:atIndex:");
+        const SetVertexBufferFn = *const fn (?*anyopaque, ?*objc.Sel, ?*anyopaque, usize, usize) callconv(.c) void;
+        const msgSetVertexBuffer: SetVertexBufferFn = @ptrCast(&objc.objc_msgSend);
+        msgSetVertexBuffer(self.ptr, sel, buffer.ptr, 0, 0);
+    }
+
+    pub fn drawPrimitives(self: RenderCommandEncoder, primitive_type: PrimitiveType, vertex_start: usize, vertex_count: usize) void {
+        const sel = objc.sel_registerName("drawPrimitives:primitiveType:vertexStart:vertexCount:");
+        const DrawPrimitivesFn = *const fn (?*anyopaque, ?*objc.Sel, usize, usize, usize) callconv(.c) void;
+        const msgDrawPrimitives: DrawPrimitivesFn = @ptrCast(&objc.objc_msgSend);
+        msgDrawPrimitives(self.ptr, sel, @intFromEnum(primitive_type), vertex_start, vertex_count);
+    }
+
+    pub fn endEncoding(self: RenderCommandEncoder) void {
+        const sel = objc.sel_registerName("endEncoding");
+        _ = objc.objc_msgSend(self.ptr, sel);
     }
 };
 
