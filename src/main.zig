@@ -33,7 +33,7 @@ pub fn main() !void {
     const texture = drawable.texture();
     render_pass_color_attachment_descriptor.setTexture(texture);
     render_pass_color_attachment_descriptor.setLoadAction(metal.LoadAction.LoadActionClear);
-    render_pass_color_attachment_descriptor.setClearColor(.{ .alpha = 1.0, .blue = 42.0 / 255.0, .green = 48.0 / 255.0, .red = 41.0 / 255.0 });
+    render_pass_color_attachment_descriptor.setClearColor(.{ .alpha = 1.0, .blue = 0, .green = 1.0, .red = 0 });
     render_pass_color_attachment_descriptor.setStoreAction(metal.StoreAction.StoreActionStore);
 
     const command_encoder = command_buffer.renderCommandEncoder(render_pass_descriptor);

@@ -315,10 +315,10 @@ pub const StoreAction = enum(usize) {
 };
 
 pub const ClearColor = extern struct {
-    alpha: f64,
-    blue: f64,
-    green: f64,
     red: f64,
+    green: f64,
+    blue: f64,
+    alpha: f64,
 };
 
 pub const RenderPassColorAttachmentDescriptor = struct {
