@@ -14,6 +14,8 @@ pub const NSRect = extern struct {
     h: f64,
 };
 
+pub const NSEventMaskAny = @as(u64, 0xFFFFFFFFFFFFFFFF);
+
 pub const App = struct {
     ptr: objc.ID,
 
@@ -37,6 +39,50 @@ pub const App = struct {
     pub fn run(self: App) void {
         const sel = objc.sel_registerName("run");
         _ = objc.objc_msgSend(self.ptr, sel);
+    }
+
+    pub fn nextEvent(self: App) ?objc.ID {
+        const sel = objc.sel_registerName("nextEventMatchingMask:untilDate:inMode:dequeue:");
+
+        // Signature: (self, _sel, mask, date, mode, dequeue)
+        const NextEventFn = *const fn (
+            objc.ID,
+            ?*objc.Sel,
+            u64, // mask
+            objc.ID, // date (objc.ID is already ?*anyopaque)
+            objc.ID, // mode
+            u8, // dequeue
+        ) callconv(.c) objc.ID;
+
+        const msgSend: NextEventFn = @ptrCast(&objc.objc_msgSend);
+
+        const cls_string = objc.objc_getClass("NSString");
+        const sel_utf8 = objc.sel_registerName("stringWithUTF8String:");
+
+        const mode = @as(*const fn (objc.ID, ?*objc.Sel, [*c]const u8) callconv(.c) objc.ID, @ptrCast(&objc.objc_msgSend))(cls_string, sel_utf8, "NSDefaultRunLoopMode");
+
+        // 1. Create the NSString (Foundation Object)
+        // We cast msgSend to ensure the return is treated as a pointer
+        //const CreateStrFn = *const fn (?*anyopaque, ?*objc.Sel, [*c]const u8) callconv(.c) ?*anyopaque;
+        //const msgSendCreate: CreateStrFn = @ptrCast(&objc.objc_msgSend);
+
+        //const mode = msgSendCreate(cls_string, sel_utf8, "kCFRunLoopDefaultMode".ptr);
+
+        const NSDate = objc.objc_getClass("NSDate");
+        const distantPast = objc.objc_msgSend(NSDate, objc.sel_registerName("distantPast"));
+
+        return msgSend(self.ptr, sel, 0xFFFFFFFFFFFFFFFF, distantPast, mode, 1);
+    }
+
+    pub fn sendEvent(self: App, event: objc.ID) void {
+        const sel = objc.sel_registerName("sendEvent:");
+        const SendEventFn = *const fn (objc.ID, ?*objc.Sel, objc.ID) callconv(.c) void;
+        const msgSend: SendEventFn = @ptrCast(&objc.objc_msgSend);
+        msgSend(self.ptr, sel, event);
+    }
+
+    pub fn updateWindows(self: App) void {
+        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("updateWindows"));
     }
 };
 

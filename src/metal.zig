@@ -287,7 +287,7 @@ pub fn setupMetalLayer(window: appkit.Window, device: Device) MetalLayer {
     return .{ .ptr = layer };
 }
 
-const RenderPipelineState = struct {
+pub const RenderPipelineState = struct {
     ptr: objc.ID,
 };
 
