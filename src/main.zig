@@ -14,6 +14,12 @@ const Particle = extern struct {
     color: [4]f32,
 };
 
+const MouseUniforms = extern struct {
+    pos: [2]f32,
+    radius: f32,
+    strength: f32,
+};
+
 const PARTICLE_COUNT: usize = 100_000;
 const THREAD_GROUP_WIDTH: usize = 64;
 
@@ -27,6 +33,7 @@ const RenderState = struct {
     render_pipeline: metal.RenderPipelineState,
     compute_pipeline: metal.ComputePipelineState,
     particle_buffer: metal.Buffer,
+    window: objc.ID,
 };
 
 var g_render_state: ?RenderState = null;
@@ -78,11 +85,12 @@ fn setup() !void {
         "activateIgnoringOtherApps:", .{@as(u8, 1)});
 
     g_render_state = .{
-        .metal_layer     = layer,
-        .command_queue   = command_queue,
-        .render_pipeline = render_pipeline,
+        .metal_layer      = layer,
+        .command_queue    = command_queue,
+        .render_pipeline  = render_pipeline,
         .compute_pipeline = compute_pipeline,
-        .particle_buffer = particle_buffer,
+        .particle_buffer  = particle_buffer,
+        .window           = window.ptr,
     };
 
     startDisplayLink();
@@ -141,13 +149,37 @@ pub fn main() !void {
 // Per-frame render: compute pass (physics) → render pass (draw)
 // ---------------------------------------------------------------------------
 
+const NSPoint = extern struct { x: f64, y: f64 };
+const NSRect = extern struct {
+    origin: extern struct { x: f64, y: f64 },
+    size: extern struct { width: f64, height: f64 },
+};
+
+fn mousePosNDC(window: objc.ID) [2]f32 {
+    const screen_pt = objc.send(NSPoint, objc.getClass("NSEvent"), "mouseLocation", .{});
+    const win_pt = objc.send(NSPoint, window, "convertPointFromScreen:", .{screen_pt});
+    const view = objc.send(objc.ID, window, "contentView", .{});
+    const view_pt = objc.send(NSPoint, view, "convertPoint:fromView:", .{ win_pt, @as(objc.ID, null) });
+    const bounds = objc.send(NSRect, view, "bounds", .{});
+    const x = @as(f32, @floatCast(view_pt.x / bounds.size.width * 2.0 - 1.0));
+    const y = @as(f32, @floatCast(view_pt.y / bounds.size.height * 2.0 - 1.0));
+    return .{ x, y };
+}
+
 fn drawFrame(state: RenderState) void {
     const cmd = state.command_queue.commandBuffer();
 
     // Compute pass — update particle positions on the GPU.
+    const mouse = MouseUniforms{
+        .pos      = mousePosNDC(state.window),
+        .radius   = 0.15,
+        .strength = 0.04,
+    };
+
     const compute_enc = cmd.computeCommandEncoder();
     compute_enc.setComputePipelineState(state.compute_pipeline);
     compute_enc.setBuffer(state.particle_buffer, 0, 0);
+    compute_enc.setBytes(MouseUniforms, &mouse, 1);
     compute_enc.dispatchThreads(
         .{ .width = PARTICLE_COUNT, .height = 1, .depth = 1 },
         .{ .width = THREAD_GROUP_WIDTH, .height = 1, .depth = 1 },

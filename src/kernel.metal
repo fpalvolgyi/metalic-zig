@@ -9,6 +9,13 @@ struct Particle {
     float4 color;
 };
 
+// Layout must match Zig's MouseUniforms extern struct exactly.
+struct MouseUniforms {
+    float2 pos;
+    float  radius;
+    float  strength;
+};
+
 struct VertexOut {
     float4 position   [[position]];
     float4 color;
@@ -21,6 +28,7 @@ struct VertexOut {
 
 kernel void updateParticles(
     device Particle* particles [[buffer(0)]],
+    constant MouseUniforms& mouse [[buffer(1)]],
     uint id    [[thread_position_in_grid]],
     uint count [[threads_per_grid]])
 {
@@ -39,6 +47,14 @@ kernel void updateParticles(
     if (p.position.x >  1.0) { p.position.x =  1.0; p.velocity.x = -abs(p.velocity.x); }
     if (p.position.y < -1.0) { p.position.y = -1.0; p.velocity.y =  abs(p.velocity.y) * damping; }
     if (p.position.y >  1.0) { p.position.y =  1.0; p.velocity.y = -abs(p.velocity.y); }
+
+    // Mouse repulsion — push particles away from the cursor.
+    float2 delta = p.position - mouse.pos;
+    float  dist  = length(delta);
+    if (dist < mouse.radius && dist > 0.0001) {
+        float falloff = 1.0 - dist / mouse.radius;
+        p.velocity += normalize(delta) * mouse.strength * falloff;
+    }
 
     particles[id] = p;
 }

@@ -307,6 +307,14 @@ pub const ComputeCommandEncoder = struct {
         objc.send(void, self.ptr, "dispatchThreads:threadsPerThreadgroup:", .{ threads, per_group });
     }
 
+    pub fn setBytes(self: ComputeCommandEncoder, comptime T: type, data: *const T, index: usize) void {
+        objc.send(void, self.ptr, "setBytes:length:atIndex:", .{
+            @as(?*const anyopaque, @ptrCast(data)),
+            @as(usize, @sizeOf(T)),
+            index,
+        });
+    }
+
     pub fn endEncoding(self: ComputeCommandEncoder) void {
         objc.send(void, self.ptr, "endEncoding", .{});
     }
