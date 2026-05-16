@@ -78,7 +78,7 @@ pub fn build(b: *std.Build) void {
 
     const compile_shaders = b.addSystemCommand(&.{
         "xcrun", "-sdk",             "macosx",           "metal",
-        "-o",    "default.metallib", "src/kernel.metal",
+        "-o",    "src/default.metallib", "src/kernel.metal",
     });
     exe.step.dependOn(&compile_shaders.step);
 

@@ -2,17 +2,14 @@ const objc = @import("obj_runtime.zig");
 const appkit = @import("appkit.zig");
 const std = @import("std");
 
-pub const Vertex = extern struct {
-    position: [3]f32,
-    color: [4]f32,
-};
-
 extern "c" fn MTLCreateSystemDefaultDevice() ?*anyopaque;
 
-pub fn getBufferPointer(buffer: objc.ID) [*]Vertex {
-    const contents = objc.send(objc.ID, buffer, "contents", .{});
-    return @ptrCast(@alignCast(contents));
-}
+// Matches MTLSize — width/height/depth for compute dispatches and textures.
+pub const MTLSize = extern struct {
+    width: usize,
+    height: usize,
+    depth: usize,
+};
 
 pub const MTLStorageMode = enum(usize) { MTLResourceStorageModeShared = 0 };
 pub const PrimitiveType = enum(usize) { Point = 0, Line = 1, LineStrip = 2, Triangle = 3, TriangleStrip = 4 };
@@ -28,20 +25,13 @@ pub const Device = struct {
         return .{ .ptr = dev };
     }
 
-    pub fn newBufferWithBytes(self: Device, data: []const Vertex, storage_mode: MTLStorageMode) Buffer {
+    /// Copy `data` (any slice) into a new Metal buffer.
+    pub fn newBufferWithBytes(self: Device, data: anytype, storage_mode: MTLStorageMode) Buffer {
+        const T = @typeInfo(@TypeOf(data)).pointer.child;
         return .{ .ptr = objc.send(objc.ID, self.ptr, "newBufferWithBytes:length:options:", .{
-            @as(?*const anyopaque, data.ptr),
-            data.len * @sizeOf(Vertex),
+            @as(?*const anyopaque, @ptrCast(data.ptr)),
+            data.len * @sizeOf(T),
             @intFromEnum(storage_mode),
-        }) };
-    }
-
-    pub fn newBufferWithBytesNoCopy(self: Device, data: []const Vertex, storage_mode: MTLStorageMode) Buffer {
-        return .{ .ptr = objc.send(objc.ID, self.ptr, "newBufferWithBytesNoCopy:length:options:deallocator:", .{
-            @as(?*const anyopaque, data.ptr),
-            data.len * @sizeOf(Vertex),
-            @intFromEnum(storage_mode),
-            @as(objc.ID, null),
         }) };
     }
 
@@ -59,15 +49,29 @@ pub const Device = struct {
             descriptor.ptr,
             @as(?*objc.ID, &err),
         });
-
         if (state == null) {
             if (err) |e| {
                 const metal_err = Error{ .ptr = e };
-                std.debug.print("Metal Pipeline Error: {s}\n", .{metal_err.localizedDescription()});
+                std.debug.print("Render Pipeline Error: {s}\n", .{metal_err.localizedDescription()});
             }
-            return error.PipelineStateCreationFailed;
+            return error.RenderPipelineCreationFailed;
         }
+        return .{ .ptr = state };
+    }
 
+    pub fn newComputePipelineState(self: Device, function: objc.ID) !ComputePipelineState {
+        var err: objc.ID = null;
+        const state = objc.send(objc.ID, self.ptr, "newComputePipelineStateWithFunction:error:", .{
+            function,
+            @as(?*objc.ID, &err),
+        });
+        if (state == null) {
+            if (err) |e| {
+                const metal_err = Error{ .ptr = e };
+                std.debug.print("Compute Pipeline Error: {s}\n", .{metal_err.localizedDescription()});
+            }
+            return error.ComputePipelineCreationFailed;
+        }
         return .{ .ptr = state };
     }
 };
@@ -167,25 +171,20 @@ pub fn setupMetalLayer(window: appkit.Window, device: Device) MetalLayer {
     const win_ptr = window.ptr;
     const dev_ptr = device.ptr;
 
-    // Allocate and initialize CAMetalLayer
     const layer_alloc = objc.send(objc.ID, objc.getClass("CAMetalLayer"), "alloc", .{});
     const layer = objc.send(objc.ID, layer_alloc, "init", .{});
 
-    // Configure device and pixel format
     objc.send(void, layer, "setDevice:", .{dev_ptr});
     objc.send(void, layer, "setPixelFormat:", .{@intFromEnum(PixelFormat.bgra8_unorm)});
     objc.send(void, layer, "setOpaque:", .{true});
 
-    // Match the window's backing scale for Retina displays
     const scale = objc.send(f64, win_ptr, "backingScaleFactor", .{});
     objc.send(void, layer, "setContentsScale:", .{scale});
 
-    // Attach to the window's content view
     const view = objc.send(objc.ID, win_ptr, "contentView", .{});
     objc.send(void, view, "setLayer:", .{layer});
     objc.send(void, view, "setWantsLayer:", .{true});
 
-    // Set the layer frame so nextDrawable returns a properly-sized texture.
     const NSRect = extern struct {
         origin: extern struct { x: f64, y: f64 },
         size: extern struct { width: f64, height: f64 },
@@ -197,6 +196,7 @@ pub fn setupMetalLayer(window: appkit.Window, device: Device) MetalLayer {
 }
 
 pub const RenderPipelineState = struct { ptr: objc.ID };
+pub const ComputePipelineState = struct { ptr: objc.ID };
 
 pub const CommandQueue = struct {
     ptr: objc.ID,
@@ -268,11 +268,15 @@ pub const RenderPassDescriptor = struct {
     }
 };
 
-const CommandBuffer = struct {
+pub const CommandBuffer = struct {
     ptr: objc.ID,
 
     pub fn renderCommandEncoder(self: CommandBuffer, descriptor: RenderPassDescriptor) RenderCommandEncoder {
         return .{ .ptr = objc.send(objc.ID, self.ptr, "renderCommandEncoderWithDescriptor:", .{descriptor.ptr}) };
+    }
+
+    pub fn computeCommandEncoder(self: CommandBuffer) ComputeCommandEncoder {
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "computeCommandEncoder", .{}) };
     }
 
     pub fn presentDrawable(self: CommandBuffer, drawable: objc.ID) void {
@@ -288,7 +292,27 @@ const CommandBuffer = struct {
     }
 };
 
-const RenderCommandEncoder = struct {
+pub const ComputeCommandEncoder = struct {
+    ptr: objc.ID,
+
+    pub fn setComputePipelineState(self: ComputeCommandEncoder, state: ComputePipelineState) void {
+        objc.send(void, self.ptr, "setComputePipelineState:", .{state.ptr});
+    }
+
+    pub fn setBuffer(self: ComputeCommandEncoder, buffer: Buffer, offset: usize, index: usize) void {
+        objc.send(void, self.ptr, "setBuffer:offset:atIndex:", .{ buffer.ptr, offset, index });
+    }
+
+    pub fn dispatchThreads(self: ComputeCommandEncoder, threads: MTLSize, per_group: MTLSize) void {
+        objc.send(void, self.ptr, "dispatchThreads:threadsPerThreadgroup:", .{ threads, per_group });
+    }
+
+    pub fn endEncoding(self: ComputeCommandEncoder) void {
+        objc.send(void, self.ptr, "endEncoding", .{});
+    }
+};
+
+pub const RenderCommandEncoder = struct {
     ptr: objc.ID,
 
     pub fn setRenderPipelineState(self: RenderCommandEncoder, state: RenderPipelineState) void {
@@ -312,10 +336,10 @@ const RenderCommandEncoder = struct {
     }
 };
 
-pub fn create_render_pipeline(device: Device) !RenderPipelineState {
+pub fn create_render_pipeline(device: Device, vertex_name: [:0]const u8, fragment_name: [:0]const u8) !RenderPipelineState {
     const library = Library.init(device);
-    const vertex_shader = library.newFunction("vertexShader");
-    const fragment_shader = library.newFunction("fragmentShader");
+    const vertex_shader = library.newFunction(vertex_name);
+    const fragment_shader = library.newFunction(fragment_name);
     const descriptor = RenderPipelineDescriptor.new();
     descriptor.setVertexFunction(vertex_shader);
     descriptor.setFragmentFunction(fragment_shader);
@@ -323,11 +347,16 @@ pub fn create_render_pipeline(device: Device) !RenderPipelineState {
     return device.newRenderPipelineState(descriptor);
 }
 
+pub fn create_compute_pipeline(device: Device, kernel_name: [:0]const u8) !ComputePipelineState {
+    const library = Library.init(device);
+    const kernel_fn = library.newFunction(kernel_name);
+    return device.newComputePipelineState(kernel_fn);
+}
+
 pub const CaptureDescriptor = struct {
     pub fn init(device: objc.ID) objc.ID {
         const obj = objc.send(objc.ID, objc.getClass("MTLCaptureDescriptor"), "new", .{});
         objc.send(void, obj, "setCaptureObject:", .{device});
-        // MTLCaptureDestinationGPUTraceDocument = 1
         objc.send(void, obj, "setDestination:", .{@as(usize, 1)});
         return obj;
     }
