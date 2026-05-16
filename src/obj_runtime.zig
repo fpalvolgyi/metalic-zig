@@ -13,6 +13,11 @@ pub extern "c" fn sel_registerName(name: [*c]const u8) ?*Sel;
 // On x86_64, you'd need different variants for different return types.
 pub extern "c" fn objc_msgSend(self: ?*anyopaque, op: ?*Sel, ...) ?*anyopaque;
 
+// ObjC runtime class registration — used to define delegate classes from Zig
+pub extern "c" fn objc_allocateClassPair(superclass: ?*anyopaque, name: [*:0]const u8, extra_bytes: usize) ?*anyopaque;
+pub extern "c" fn objc_registerClassPair(cls: ?*anyopaque) void;
+pub extern "c" fn class_addMethod(cls: ?*anyopaque, name: ?*Sel, imp: *const anyopaque, types: [*:0]const u8) bool;
+
 pub fn stringWithUTF8String(text: [:0]const u8) ID {
     const cls_string = objc_getClass("NSString");
     const sel_utf8 = sel_registerName("stringWithUTF8String:");

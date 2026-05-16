@@ -3,105 +3,153 @@ const appkit = @import("appkit.zig");
 const metal = @import("metal.zig");
 const objc = @import("obj_runtime.zig");
 
-pub fn main() !void {
-    const my_app = appkit.App.init();
+// ---------------------------------------------------------------------------
+// Global render state — populated in applicationDidFinishLaunching, read by
+// the NSTimer callback on every display tick.
+// ---------------------------------------------------------------------------
+const RenderState = struct {
+    metal_layer: metal.MetalLayer,
+    command_queue: metal.CommandQueue,
+    pipeline: metal.RenderPipelineState,
+    vertex_buffer: metal.Buffer,
+};
 
-    const win_rect = appkit.NSRect{ .x = 300, .y = 300, .w = 400, .h = 300 };
-    const my_window = appkit.Window.init(win_rect);
+var g_render_state: ?RenderState = null;
 
-    my_window.setTitle("Metal computer");
+const triangle = [3]metal.Vertex{
+    .{ .position = .{ 0.0, 0.5, 0.0 }, .color = .{ 1.0, 0.0, 0.0, 1.0 } },
+    .{ .position = .{ -0.5, -0.5, 0.0 }, .color = .{ 0.0, 1.0, 0.0, 1.0 } },
+    .{ .position = .{ 0.5, -0.5, 0.0 }, .color = .{ 0.0, 0.0, 1.0, 1.0 } },
+};
 
-    const device = try metal.Device.init();
+// ---------------------------------------------------------------------------
+// NSApplicationDelegate callbacks
+// ---------------------------------------------------------------------------
 
-    const capture_manager = objc.objc_getClass("MTLCaptureManager");
-    const shared_manager = objc.objc_msgSend(capture_manager, objc.sel_registerName("sharedCaptureManager"));
+// "v@:@"  →  void  id(self)  SEL(_cmd)  id(notification)
+fn applicationDidFinishLaunching(self: objc.ID, _: ?*objc.Sel, _: objc.ID) callconv(.c) void {
+    const win_rect = appkit.NSRect{ .x = 300, .y = 300, .w = 800, .h = 600 };
+    const window = appkit.Window.init(win_rect);
+    window.setTitle("Metal kernel");
 
-    const descriptor = metal.CaptureDescriptor.init(device.ptr);
-    var err: objc.ID = null;
-    const startSel = objc.sel_registerName("startCaptureWithDescriptor:error:");
-    const StartFn = *const fn (objc.ID, ?*objc.Sel, objc.ID, ?*objc.ID) callconv(.c) bool;
-    _ = @as(StartFn, @ptrCast(&objc.objc_msgSend))(shared_manager, startSel, descriptor, &err);
-
-    const metal_layer = metal.setupMetalLayer(my_window, device);
-
-    const render_pipeline_state = try metal.create_render_pipeline(device);
-    const command_queue = device.newCommandQueue();
-
-    const triangle = [3]metal.Vertex{
-        .{
-            .position = .{ 0.0, 0.5, 0.0 },
-            .color = .{ 1.0, 0.0, 0.0, 1.0 },
-        },
-        .{
-            .position = .{ -0.5, -0.5, 0.0 },
-            .color = .{ 0.0, 1.0, 0.0, 1.0 },
-        },
-        .{
-            .position = .{ 0.5, -0.5, 0.0 },
-            .color = .{ 0.0, 0.0, 1.0, 1.0 },
-        },
+    const device = metal.Device.init() catch {
+        std.debug.print("ERROR: no GPU found\n", .{});
+        return;
     };
 
-    my_window.show();
+    const layer = metal.setupMetalLayer(window, device);
 
-    //my_app.run();
+    const pipeline = metal.create_render_pipeline(device) catch {
+        std.debug.print("ERROR: pipeline creation failed\n", .{});
+        return;
+    };
 
-    const buffer = device.newBufferWithBytesNoCopy(&triangle, metal.MTLStorageMode.MTLResourceStorageModeShared);
+    const command_queue = device.newCommandQueue();
+    const vertex_buffer = device.newBufferWithBytes(&triangle, .MTLResourceStorageModeShared);
 
-    while (true) {
-        const pool = objc.objc_msgSend(objc.objc_getClass("NSAutoreleasePool"), objc.sel_registerName("alloc"));
-        _ = objc.objc_msgSend(pool, objc.sel_registerName("init"));
+    window.show();
 
-        var count: usize = 0;
-        while (count < 20) : (count += 1) {
-            // nextEvent returns ?*anyopaque
-            const event = my_app.nextEvent();
+    // Re-activate after the window exists so it receives focus without
+    // requiring a dock click. The earlier activate in App.init fires before
+    // the run loop and window are ready.
+    const ns_app = objc.objc_getClass("NSApplication");
+    const shared = objc.objc_msgSend(ns_app, objc.sel_registerName("sharedApplication"));
+    const ActivateFn = *const fn (objc.ID, ?*objc.Sel, u8) callconv(.c) void;
+    @as(ActivateFn, @ptrCast(&objc.objc_msgSend))(shared, objc.sel_registerName("activateIgnoringOtherApps:"), 1);
 
-            // Use an 'if' capture to unwrap the optional
-            if (event) |e| {
-                const event_type = @as(*const fn (objc.ID, ?*objc.Sel) callconv(.c) u64, @ptrCast(&objc.objc_msgSend))(e, objc.sel_registerName("type"));
+    g_render_state = .{
+        .metal_layer = layer,
+        .command_queue = command_queue,
+        .pipeline = pipeline,
+        .vertex_buffer = vertex_buffer,
+    };
 
-                if (event_type == 15) {
-                    // Handle quit
-                }
-
-                // Pass 'e' (the unwrapped pointer) instead of 'event'
-                my_app.sendEvent(e);
-            } else {
-                // Queue is empty, exit the inner loop
-                break;
-            }
-        }
-        std.debug.print("Drawing frame: ", .{});
-        drawFrame(metal_layer, command_queue, render_pipeline_state, buffer);
-
-        _ = objc.objc_msgSend(pool, objc.sel_registerName("release"));
-    }
+    scheduleRenderTimer(self);
 }
 
-fn drawFrame(metal_layer: metal.MetalLayer, command_queue: metal.CommandQueue, render_pipeline_state: metal.RenderPipelineState, vertex_buffer: metal.Buffer) void {
-    // 1. Get a fresh drawable for this specific frame
+// "B@:@"  →  BOOL  id(self)  SEL(_cmd)  id(sender)
+fn applicationShouldTerminateAfterLastWindowClosed(_: objc.ID, _: ?*objc.Sel, _: objc.ID) callconv(.c) bool {
+    return true;
+}
+
+// "v@:@"  →  void  id(self)  SEL(_cmd)  id(timer)
+fn renderTick(_: objc.ID, _: ?*objc.Sel, _: objc.ID) callconv(.c) void {
+    const state = g_render_state orelse return;
+    drawFrame(state.metal_layer, state.command_queue, state.pipeline, state.vertex_buffer);
+}
+
+// ---------------------------------------------------------------------------
+// Delegate class registration
+// ---------------------------------------------------------------------------
+
+fn registerDelegate() objc.ID {
+    const NSObject = objc.objc_getClass("NSObject");
+    const cls = objc.objc_allocateClassPair(NSObject, "AppDelegate", 0).?;
+
+    _ = objc.class_addMethod(cls, objc.sel_registerName("applicationDidFinishLaunching:"),
+        @ptrCast(&applicationDidFinishLaunching), "v@:@");
+    _ = objc.class_addMethod(cls, objc.sel_registerName("applicationShouldTerminateAfterLastWindowClosed:"),
+        @ptrCast(&applicationShouldTerminateAfterLastWindowClosed), "B@:@");
+    _ = objc.class_addMethod(cls, objc.sel_registerName("renderTick:"),
+        @ptrCast(&renderTick), "v@:@");
+
+    objc.objc_registerClassPair(cls);
+
+    return objc.objc_msgSend(cls, objc.sel_registerName("new"));
+}
+
+fn scheduleRenderTimer(delegate: objc.ID) void {
+    const NSTimer = objc.objc_getClass("NSTimer");
+    const sel = objc.sel_registerName("scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:");
+    const Fn = *const fn (objc.ID, ?*objc.Sel, f64, objc.ID, ?*objc.Sel, objc.ID, u8) callconv(.c) objc.ID;
+    _ = @as(Fn, @ptrCast(&objc.objc_msgSend))(
+        NSTimer, sel,
+        1.0 / 60.0,
+        delegate,
+        objc.sel_registerName("renderTick:"),
+        null,
+        1,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+pub fn main() !void {
+    const app = appkit.App.init();
+    const delegate = registerDelegate();
+    app.setDelegate(delegate);
+    app.run();
+}
+
+// ---------------------------------------------------------------------------
+// Render
+// ---------------------------------------------------------------------------
+
+fn drawFrame(
+    metal_layer: metal.MetalLayer,
+    command_queue: metal.CommandQueue,
+    pipeline: metal.RenderPipelineState,
+    vertex_buffer: metal.Buffer,
+) void {
     const drawable = metal_layer.nextDrawable();
     const texture = drawable.texture();
 
-    // 2. Setup your pass using the texture we just got
-    const render_pass_descriptor = metal.RenderPassDescriptor.renderPassDescriptor();
-    const render_pass_color_attachment_descriptor = render_pass_descriptor.getColorAttachemnts().get(0);
+    const pass = metal.RenderPassDescriptor.renderPassDescriptor();
+    const color_attach = pass.getColorAttachemnts().get(0);
+    color_attach.setTexture(texture);
+    color_attach.setLoadAction(metal.LoadAction.LoadActionClear);
+    color_attach.setClearColor(.{ .red = 0.1, .green = 0.1, .blue = 0.15, .alpha = 1.0 });
+    color_attach.setStoreAction(metal.StoreAction.StoreActionStore);
 
-    render_pass_color_attachment_descriptor.setTexture(texture);
-    render_pass_color_attachment_descriptor.setLoadAction(metal.LoadAction.LoadActionClear);
-    render_pass_color_attachment_descriptor.setClearColor(.{ .alpha = 1.0, .blue = 0, .green = 1.0, .red = 0 });
-    render_pass_color_attachment_descriptor.setStoreAction(metal.StoreAction.StoreActionStore);
+    const cmd = command_queue.commandBuffer();
+    const enc = cmd.renderCommandEncoder(pass);
+    enc.setRenderPipelineState(pipeline);
+    enc.setVertexBuffer(vertex_buffer);
+    enc.drawPrimitives(metal.PrimitiveType.Triangle, 0, 3);
+    enc.endEncoding();
 
-    // 3. Encode commands
-    const command_buffer = command_queue.commandBuffer();
-    const command_encoder = command_buffer.renderCommandEncoder(render_pass_descriptor);
-    command_encoder.setRenderPipelineState(render_pipeline_state);
-
-    command_encoder.setVertexBuffer(vertex_buffer);
-    command_encoder.drawPrimitives(metal.PrimitiveType.Triangle, 0, 3);
-    command_encoder.endEncoding();
-    command_buffer.presentDrawable(drawable.ptr);
-    command_buffer.commit();
-    //command_buffer.waitUntilCompleted();
+    cmd.presentDrawable(drawable.ptr);
+    cmd.commit();
 }

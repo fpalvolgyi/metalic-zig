@@ -30,6 +30,12 @@ pub const Device = struct {
         return .{ .ptr = dev };
     }
 
+    pub fn newBufferWithBytes(self: Device, data: []const Vertex, storage_mode: MTLStorageMode) Buffer {
+        const sel = objc.sel_registerName("newBufferWithBytes:length:options:");
+        const Fn = *const fn (objc.ID, ?*objc.Sel, ?*const anyopaque, usize, usize) callconv(.c) objc.ID;
+        return .{ .ptr = @as(Fn, @ptrCast(&objc.objc_msgSend))(self.ptr, sel, data.ptr, data.len * @sizeOf(Vertex), @intFromEnum(storage_mode)) };
+    }
+
     pub fn newBufferWithBytesNoCopy(self: Device, data: []const Vertex, storage_mode: MTLStorageMode) Buffer {
         const sel = objc.sel_registerName("newBufferWithBytesNoCopy:length:options:deallocator:");
         const NoCopyFn = *const fn (objc.ID, ?*objc.Sel, ?*const anyopaque, usize, usize, ?*anyopaque) callconv(.c) objc.ID;

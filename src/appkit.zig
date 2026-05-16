@@ -28,11 +28,6 @@ pub const App = struct {
         const msgSendPolicy: setPolicyFn = @ptrCast(&objc.objc_msgSend);
         msgSendPolicy(app, objc.sel_registerName("setActivationPolicy:"), 0);
 
-        // 2. Force it to the front
-        const activateFn = *const fn (?*anyopaque, ?*objc.Sel, u8) callconv(.c) void;
-        const msgSendActivate: activateFn = @ptrCast(&objc.objc_msgSend);
-        msgSendActivate(app, objc.sel_registerName("activateIgnoringOtherApps:"), 1);
-
         return .{ .ptr = app };
     }
 
@@ -79,6 +74,11 @@ pub const App = struct {
         const SendEventFn = *const fn (objc.ID, ?*objc.Sel, objc.ID) callconv(.c) void;
         const msgSend: SendEventFn = @ptrCast(&objc.objc_msgSend);
         msgSend(self.ptr, sel, event);
+    }
+
+    pub fn setDelegate(self: App, delegate: objc.ID) void {
+        const Fn = *const fn (objc.ID, ?*objc.Sel, objc.ID) callconv(.c) void;
+        @as(Fn, @ptrCast(&objc.objc_msgSend))(self.ptr, objc.sel_registerName("setDelegate:"), delegate);
     }
 
     pub fn updateWindows(self: App) void {
