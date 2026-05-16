@@ -20,69 +20,36 @@ pub const App = struct {
     ptr: objc.ID,
 
     pub fn init() App {
-        const cls = objc.objc_getClass("NSApplication");
-        const app = objc.objc_msgSend(cls, objc.sel_registerName("sharedApplication"));
-
-        // 1. Make it a regular GUI app
-        const setPolicyFn = *const fn (?*anyopaque, ?*objc.Sel, isize) callconv(.c) void;
-        const msgSendPolicy: setPolicyFn = @ptrCast(&objc.objc_msgSend);
-        msgSendPolicy(app, objc.sel_registerName("setActivationPolicy:"), 0);
-
+        const app = objc.send(objc.ID, objc.getClass("NSApplication"), "sharedApplication", .{});
+        objc.send(void, app, "setActivationPolicy:", .{@as(isize, 0)});
         return .{ .ptr = app };
     }
 
     pub fn run(self: App) void {
-        const sel = objc.sel_registerName("run");
-        _ = objc.objc_msgSend(self.ptr, sel);
-    }
-
-    pub fn nextEvent(self: App) ?objc.ID {
-        const sel = objc.sel_registerName("nextEventMatchingMask:untilDate:inMode:dequeue:");
-
-        // Signature: (self, _sel, mask, date, mode, dequeue)
-        const NextEventFn = *const fn (
-            objc.ID,
-            ?*objc.Sel,
-            u64, // mask
-            objc.ID, // date (objc.ID is already ?*anyopaque)
-            objc.ID, // mode
-            u8, // dequeue
-        ) callconv(.c) objc.ID;
-
-        const msgSend: NextEventFn = @ptrCast(&objc.objc_msgSend);
-
-        const cls_string = objc.objc_getClass("NSString");
-        const sel_utf8 = objc.sel_registerName("stringWithUTF8String:");
-
-        const mode = @as(*const fn (objc.ID, ?*objc.Sel, [*c]const u8) callconv(.c) objc.ID, @ptrCast(&objc.objc_msgSend))(cls_string, sel_utf8, "NSDefaultRunLoopMode");
-
-        // 1. Create the NSString (Foundation Object)
-        // We cast msgSend to ensure the return is treated as a pointer
-        //const CreateStrFn = *const fn (?*anyopaque, ?*objc.Sel, [*c]const u8) callconv(.c) ?*anyopaque;
-        //const msgSendCreate: CreateStrFn = @ptrCast(&objc.objc_msgSend);
-
-        //const mode = msgSendCreate(cls_string, sel_utf8, "kCFRunLoopDefaultMode".ptr);
-
-        const NSDate = objc.objc_getClass("NSDate");
-        const distantPast = objc.objc_msgSend(NSDate, objc.sel_registerName("distantPast"));
-
-        return msgSend(self.ptr, sel, 0xFFFFFFFFFFFFFFFF, distantPast, mode, 1);
-    }
-
-    pub fn sendEvent(self: App, event: objc.ID) void {
-        const sel = objc.sel_registerName("sendEvent:");
-        const SendEventFn = *const fn (objc.ID, ?*objc.Sel, objc.ID) callconv(.c) void;
-        const msgSend: SendEventFn = @ptrCast(&objc.objc_msgSend);
-        msgSend(self.ptr, sel, event);
+        objc.send(void, self.ptr, "run", .{});
     }
 
     pub fn setDelegate(self: App, delegate: objc.ID) void {
-        const Fn = *const fn (objc.ID, ?*objc.Sel, objc.ID) callconv(.c) void;
-        @as(Fn, @ptrCast(&objc.objc_msgSend))(self.ptr, objc.sel_registerName("setDelegate:"), delegate);
+        objc.send(void, self.ptr, "setDelegate:", .{delegate});
+    }
+
+    pub fn nextEvent(self: App) ?objc.ID {
+        const mode = objc.send(objc.ID, objc.getClass("NSString"), "stringWithUTF8String:", .{@as([*c]const u8, "NSDefaultRunLoopMode")});
+        const distantPast = objc.send(objc.ID, objc.getClass("NSDate"), "distantPast", .{});
+        return objc.send(objc.ID, self.ptr, "nextEventMatchingMask:untilDate:inMode:dequeue:", .{
+            @as(u64, 0xFFFFFFFFFFFFFFFF),
+            distantPast,
+            mode,
+            @as(u8, 1),
+        });
+    }
+
+    pub fn sendEvent(self: App, event: objc.ID) void {
+        objc.send(void, self.ptr, "sendEvent:", .{event});
     }
 
     pub fn updateWindows(self: App) void {
-        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("updateWindows"));
+        objc.send(void, self.ptr, "updateWindows", .{});
     }
 };
 
@@ -90,52 +57,23 @@ pub const Window = struct {
     ptr: objc.ID,
 
     pub fn init(rect: NSRect) Window {
-        const cls = objc.objc_getClass("NSWindow");
-        const sel_alloc = objc.sel_registerName("alloc");
-        const sel_init = objc.sel_registerName("initWithContentRect:styleMask:backing:defer:");
-
-        const instance = objc.objc_msgSend(cls, sel_alloc);
-
-        // 1. Define the EXACT function signature for this specific call
-        const InitFn = *const fn (
-            ?*anyopaque, // self
-            ?*objc.Sel, // _cmd
-            NSRect, // contentRect
-            usize, // styleMask
-            usize, // backing
-            u8, // defer
-        ) callconv(.c) ?*anyopaque;
-
-        // 2. Cast objc_msgSend to that signature
-        const msgSendInit: InitFn = @ptrCast(&objc.objc_msgSend);
-
-        // 3. Call it
-        const window = msgSendInit(instance, sel_init, rect, @as(usize, 15), @as(usize, 2), @as(u8, 0));
-
+        const cls = objc.getClass("NSWindow");
+        const instance = objc.send(objc.ID, cls, "alloc", .{});
+        const window = objc.send(objc.ID, instance, "initWithContentRect:styleMask:backing:defer:", .{
+            rect,
+            @as(usize, 15), // Titled | Closable | Miniaturizable | Resizable
+            @as(usize, 2),  // NSBackingStoreBuffered
+            @as(u8, 0),
+        });
         return .{ .ptr = window };
     }
 
     pub fn show(self: Window) void {
-        const sel = objc.sel_registerName("makeKeyAndOrderFront:");
-        _ = objc.objc_msgSend(self.ptr, sel, @as(objc.ID, null));
+        objc.send(void, self.ptr, "makeKeyAndOrderFront:", .{@as(objc.ID, null)});
     }
 
     pub fn setTitle(self: Window, title: [:0]const u8) void {
-        const cls_string = objc.objc_getClass("NSString");
-        const sel_utf8 = objc.sel_registerName("stringWithUTF8String:");
-        const sel_set_title = objc.sel_registerName("setTitle:");
-
-        // 1. Create the NSString (Foundation Object)
-        // We cast msgSend to ensure the return is treated as a pointer
-        const CreateStrFn = *const fn (?*anyopaque, ?*objc.Sel, [*c]const u8) callconv(.c) ?*anyopaque;
-        const msgSendCreate: CreateStrFn = @ptrCast(&objc.objc_msgSend);
-
-        const ns_title = msgSendCreate(cls_string, sel_utf8, title.ptr) orelse return; // Safety check: if string creation fails, don't set it.
-
-        // 2. Pass the NSString to the Window
-        const SetTitleFn = *const fn (?*anyopaque, ?*objc.Sel, ?*anyopaque) callconv(.c) void;
-        const msgSendSetTitle: SetTitleFn = @ptrCast(&objc.objc_msgSend);
-
-        msgSendSetTitle(self.ptr, sel_set_title, ns_title);
+        const ns_title = objc.send(objc.ID, objc.getClass("NSString"), "stringWithUTF8String:", .{title.ptr});
+        objc.send(void, self.ptr, "setTitle:", .{ns_title});
     }
 };

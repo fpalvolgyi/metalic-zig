@@ -70,6 +70,7 @@ pub fn build(b: *std.Build) void {
     exe.linkFramework("Foundation");
     exe.linkFramework("Metal");
     exe.linkFramework("QuartzCore"); // For CAMetalLayer
+    exe.linkFramework("CoreVideo");  // For CVDisplayLink
     exe.linkSystemLibrary("objc");
 
     exe.linkLibC();

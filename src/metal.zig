@@ -10,8 +10,7 @@ pub const Vertex = extern struct {
 extern "c" fn MTLCreateSystemDefaultDevice() ?*anyopaque;
 
 pub fn getBufferPointer(buffer: objc.ID) [*]Vertex {
-    const sel = objc.sel_registerName("contents");
-    const contents = objc.objc_msgSend(buffer, sel);
+    const contents = objc.send(objc.ID, buffer, "contents", .{});
     return @ptrCast(@alignCast(contents));
 }
 
@@ -26,54 +25,50 @@ pub const Device = struct {
     pub fn init() !Device {
         const dev = MTLCreateSystemDefaultDevice();
         if (dev == null) return error.NoGpuFound;
-
         return .{ .ptr = dev };
     }
 
     pub fn newBufferWithBytes(self: Device, data: []const Vertex, storage_mode: MTLStorageMode) Buffer {
-        const sel = objc.sel_registerName("newBufferWithBytes:length:options:");
-        const Fn = *const fn (objc.ID, ?*objc.Sel, ?*const anyopaque, usize, usize) callconv(.c) objc.ID;
-        return .{ .ptr = @as(Fn, @ptrCast(&objc.objc_msgSend))(self.ptr, sel, data.ptr, data.len * @sizeOf(Vertex), @intFromEnum(storage_mode)) };
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "newBufferWithBytes:length:options:", .{
+            @as(?*const anyopaque, data.ptr),
+            data.len * @sizeOf(Vertex),
+            @intFromEnum(storage_mode),
+        }) };
     }
 
     pub fn newBufferWithBytesNoCopy(self: Device, data: []const Vertex, storage_mode: MTLStorageMode) Buffer {
-        const sel = objc.sel_registerName("newBufferWithBytesNoCopy:length:options:deallocator:");
-        const NoCopyFn = *const fn (objc.ID, ?*objc.Sel, ?*const anyopaque, usize, usize, ?*anyopaque) callconv(.c) objc.ID;
-        const msgSendNoCopy: NoCopyFn = @ptrCast(&objc.objc_msgSend);
-        // Options:
-        // 0 =
-        // (Required for NoCopy on macOS/iOS)
-        return .{ .ptr = msgSendNoCopy(self.ptr, sel, data.ptr, data.len * @sizeOf(Vertex), @intFromEnum(storage_mode), null) }; // We pass null to handle deallocation manually in Zig
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "newBufferWithBytesNoCopy:length:options:deallocator:", .{
+            @as(?*const anyopaque, data.ptr),
+            data.len * @sizeOf(Vertex),
+            @intFromEnum(storage_mode),
+            @as(objc.ID, null),
+        }) };
     }
 
     pub fn newCommandQueue(self: Device) CommandQueue {
-        const sel = objc.sel_registerName("newCommandQueue");
-        return .{ .ptr = objc.objc_msgSend(self.ptr, sel) };
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "newCommandQueue", .{}) };
     }
 
     pub fn newDefaultLibrary(self: Device) objc.ID {
-        const sel = objc.sel_registerName("newDefaultLibrary");
-        return objc.objc_msgSend(self.ptr, sel);
+        return objc.send(objc.ID, self.ptr, "newDefaultLibrary", .{});
     }
 
     pub fn newRenderPipelineState(self: Device, descriptor: RenderPipelineDescriptor) !RenderPipelineState {
-        const sel = objc.sel_registerName("newRenderPipelineStateWithDescriptor:error:");
+        var err: objc.ID = null;
+        const state = objc.send(objc.ID, self.ptr, "newRenderPipelineStateWithDescriptor:error:", .{
+            descriptor.ptr,
+            @as(?*objc.ID, &err),
+        });
 
-        const NewFn = *const fn (objc.ID, ?*objc.Sel, objc.ID, ?*objc.ID) callconv(.c) objc.ID;
-        const msgSend: NewFn = @ptrCast(&objc.objc_msgSend);
-
-        var err_ptr: objc.ID = null;
-        const state_ptr = msgSend(self.ptr, sel, descriptor.ptr, &err_ptr);
-
-        if (state_ptr == null) {
-            if (err_ptr) |err_id| {
-                const err = Error{ .ptr = err_id };
-                std.debug.print("Metal Pipeline Error: {s}\n", .{err.localizedDescription()});
+        if (state == null) {
+            if (err) |e| {
+                const metal_err = Error{ .ptr = e };
+                std.debug.print("Metal Pipeline Error: {s}\n", .{metal_err.localizedDescription()});
             }
             return error.PipelineStateCreationFailed;
         }
 
-        return .{ .ptr = state_ptr };
+        return .{ .ptr = state };
     }
 };
 
@@ -81,10 +76,8 @@ pub const Error = struct {
     ptr: objc.ID,
 
     pub fn localizedDescription(self: Error) [:0]const u8 {
-        const sel = objc.sel_registerName("localizedDescription");
-        const ns_str = objc.objc_msgSend(self.ptr, sel);
-        const sel_utf8 = objc.sel_registerName("UTF8String");
-        const c_str = objc.objc_msgSend(ns_str, sel_utf8);
+        const ns_str = objc.send(objc.ID, self.ptr, "localizedDescription", .{});
+        const c_str = objc.send(objc.ID, ns_str, "UTF8String", .{});
         return std.mem.span(@as([*c]const u8, @ptrCast(c_str)));
     }
 };
@@ -97,12 +90,7 @@ pub const Library = struct {
     }
 
     pub fn newFunction(self: Library, name: [:0]const u8) objc.ID {
-        const name_ns = objc.stringWithUTF8String(name);
-
-        const sel = objc.sel_registerName("newFunctionWithName:");
-        const NewFunctionFn = *const fn (?*anyopaque, ?*objc.Sel, ?*anyopaque) callconv(.c) objc.ID;
-        const msgNewFunction: NewFunctionFn = @ptrCast(&objc.objc_msgSend);
-        return msgNewFunction(self.ptr, sel, name_ns);
+        return objc.send(objc.ID, self.ptr, "newFunctionWithName:", .{objc.stringWithUTF8String(name)});
     }
 };
 
@@ -110,57 +98,40 @@ pub const RenderPipelineDescriptor = struct {
     ptr: objc.ID,
 
     pub fn new() RenderPipelineDescriptor {
-        const renderPipelineDescriptorClass = objc.objc_getClass("MTLRenderPipelineDescriptor");
-        return .{ .ptr = objc.objc_msgSend(renderPipelineDescriptorClass, objc.sel_registerName("new")) };
+        return .{ .ptr = objc.send(objc.ID, objc.getClass("MTLRenderPipelineDescriptor"), "new", .{}) };
     }
 
     pub fn setVertexFunction(self: RenderPipelineDescriptor, function: objc.ID) void {
-        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("setVertexFunction:"), function);
+        objc.send(void, self.ptr, "setVertexFunction:", .{function});
     }
 
     pub fn setFragmentFunction(self: RenderPipelineDescriptor, function: objc.ID) void {
-        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("setFragmentFunction:"), function);
+        objc.send(void, self.ptr, "setFragmentFunction:", .{function});
     }
 
     pub fn getColorAttachemnts(self: RenderPipelineDescriptor) RenderPipelineColorAttachmentDescriptorArray {
-        const array_ptr = objc.objc_msgSend(self.ptr, objc.sel_registerName("colorAttachments"));
-        return .{ .ptr = array_ptr };
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "colorAttachments", .{}) };
     }
 };
 
 pub const RenderPipelineColorAttachmentDescriptorArray = struct {
     ptr: objc.ID,
 
-    /// Equivalent to desc->colorAttachments()->object(index)
     pub fn get(self: RenderPipelineColorAttachmentDescriptorArray, index: usize) RenderPipelineColorAttachmentDescriptor {
-        const sel = objc.sel_registerName("objectAtIndexedSubscript:");
-
-        // Explicit cast for the return and the index parameter
-        const GetObjFn = *const fn (objc.ID, ?*objc.Sel, usize) callconv(.c) objc.ID;
-        const msgSendGet: GetObjFn = @ptrCast(&objc.objc_msgSend);
-
-        return .{ .ptr = msgSendGet(self.ptr, sel, index) };
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "objectAtIndexedSubscript:", .{index}) };
     }
 };
 
 pub const PixelFormat = enum(usize) {
     invalid = 0,
-
-    // Common 8-bit formats
     a8_unorm = 1,
     r8_unorm = 10,
     r8_sint = 14,
-
-    // The most common formats for CAMetalLayer
     rgba8_unorm = 70,
     rgba8_unorm_srgb = 71,
     bgra8_unorm = 80,
     bgra8_unorm_srgb = 81,
-
-    // 16-bit / HDR formats
     rgba16_float = 115,
-
-    // Depth and Stencil
     depth32_float = 252,
     stencil8 = 253,
     depth32_float_stencil8 = 260,
@@ -170,13 +141,7 @@ pub const RenderPipelineColorAttachmentDescriptor = struct {
     ptr: objc.ID,
 
     pub fn setPixelFormat(self: RenderPipelineColorAttachmentDescriptor, format: PixelFormat) void {
-        const sel = objc.sel_registerName("setPixelFormat:");
-
-        // Cast for the setter
-        const SetFormatFn = *const fn (objc.ID, ?*objc.Sel, usize) callconv(.c) void;
-        const msgSend: SetFormatFn = @ptrCast(&objc.objc_msgSend);
-
-        msgSend(self.ptr, sel, @intFromEnum(format));
+        objc.send(void, self.ptr, "setPixelFormat:", .{@intFromEnum(format)});
     }
 };
 
@@ -186,10 +151,7 @@ pub const Drawable = struct {
     ptr: objc.ID,
 
     pub fn texture(self: Drawable) Texture {
-        const sel = objc.sel_registerName("texture");
-        // Texture is a property, so we just send the 'texture' message
-        const tex_ptr = objc.objc_msgSend(self.ptr, sel);
-        return .{ .ptr = tex_ptr };
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "texture", .{}) };
     }
 };
 
@@ -197,111 +159,50 @@ pub const MetalLayer = struct {
     ptr: objc.ID,
 
     pub fn nextDrawable(self: MetalLayer) Drawable {
-        return .{ .ptr = objc.objc_msgSend(self.ptr, objc.sel_registerName("nextDrawable")) };
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "nextDrawable", .{}) };
     }
 };
 
-// pub fn setupMetalLayer(window: appkit.Window, device: Device) MetalLayer {
-//     const win_ptr = window.ptr;
-//     const dev_ptr = device.ptr;
-
-//     const CAMetalLayer = objc.objc_getClass("CAMetalLayer") orelse unreachable;
-//     const layer = objc.objc_msgSend(CAMetalLayer, objc.sel_registerName("layer"));
-
-//     // Function pointer types for the calls
-//     const SetPtrFn = *const fn (?*anyopaque, ?*objc.Sel, ?*anyopaque) callconv(.c) void;
-//     const SetBoolFn = *const fn (?*anyopaque, ?*objc.Sel, u8) callconv(.c) void;
-//     const msgSendSetPtr: SetPtrFn = @ptrCast(&objc.objc_msgSend);
-//     const msgSendSetBool: SetBoolFn = @ptrCast(&objc.objc_msgSend);
-
-//     // 1. Set the device on the layer
-//     msgSendSetPtr(layer, objc.sel_registerName("setDevice:"), dev_ptr);
-
-//     const sel = objc.sel_registerName("setPixelFormat:");
-
-//     // Ensure the third argument is 'usize', not '*PixelFormat' or similar
-//     const SetFormatFn = *const fn (objc.ID, ?*objc.Sel, usize) callconv(.c) void;
-//     const msgSendSetFormat: SetFormatFn = @ptrCast(&objc.objc_msgSend);
-
-//     // Use @intFromEnum to get the raw 80, 81, etc.
-//     msgSendSetFormat(layer, sel, @intFromEnum(PixelFormat.bgra8_unorm));
-
-//     // 2. Get the content view from the window (THIS WAS THE MISSING LINE)
-//     const view = objc.objc_msgSend(win_ptr, objc.sel_registerName("contentView"));
-
-//     // 3. Set the layer on the view
-//     msgSendSetPtr(view, objc.sel_registerName("setLayer:"), layer);
-
-//     // 4. Tell the view it MUST use a layer
-//     msgSendSetBool(view, objc.sel_registerName("setWantsLayer:"), 1);
-
-//     return .{ .ptr = layer };
-// }
-//
 pub fn setupMetalLayer(window: appkit.Window, device: Device) MetalLayer {
     const win_ptr = window.ptr;
     const dev_ptr = device.ptr;
 
-    // 1. Properly allocate and initialize the CAMetalLayer
-    const CAMetalLayer = objc.objc_getClass("CAMetalLayer") orelse unreachable;
-    const layer_alloc = objc.objc_msgSend(CAMetalLayer, objc.sel_registerName("alloc"));
-    const layer = objc.objc_msgSend(layer_alloc, objc.sel_registerName("init"));
+    // Allocate and initialize CAMetalLayer
+    const layer_alloc = objc.send(objc.ID, objc.getClass("CAMetalLayer"), "alloc", .{});
+    const layer = objc.send(objc.ID, layer_alloc, "init", .{});
 
-    // Function pointer types for common signatures
-    const SetPtrFn = *const fn (objc.ID, ?*objc.Sel, ?*anyopaque) callconv(.c) void;
-    const SetFloatFn = *const fn (objc.ID, ?*objc.Sel, f64) callconv(.c) void;
-    const SetBoolFn = *const fn (objc.ID, ?*objc.Sel, bool) callconv(.c) void;
-    const SetFormatFn = *const fn (objc.ID, ?*objc.Sel, usize) callconv(.c) void;
+    // Configure device and pixel format
+    objc.send(void, layer, "setDevice:", .{dev_ptr});
+    objc.send(void, layer, "setPixelFormat:", .{@intFromEnum(PixelFormat.bgra8_unorm)});
+    objc.send(void, layer, "setOpaque:", .{true});
 
-    const msgSendSetPtr: SetPtrFn = @ptrCast(&objc.objc_msgSend);
-    const msgSendSetFloat: SetFloatFn = @ptrCast(&objc.objc_msgSend);
-    const msgSendSetBool: SetBoolFn = @ptrCast(&objc.objc_msgSend);
-    const msgSendSetFormat: SetFormatFn = @ptrCast(&objc.objc_msgSend);
+    // Match the window's backing scale for Retina displays
+    const scale = objc.send(f64, win_ptr, "backingScaleFactor", .{});
+    objc.send(void, layer, "setContentsScale:", .{scale});
 
-    // 2. Set the device and basic properties
-    msgSendSetPtr(layer, objc.sel_registerName("setDevice:"), dev_ptr);
-    msgSendSetFormat(layer, objc.sel_registerName("setPixelFormat:"), @intFromEnum(PixelFormat.bgra8_unorm));
+    // Attach to the window's content view
+    const view = objc.send(objc.ID, win_ptr, "contentView", .{});
+    objc.send(void, view, "setLayer:", .{layer});
+    objc.send(void, view, "setWantsLayer:", .{true});
 
-    // Set opaque to true for better performance if you don't need transparency
-    msgSendSetBool(layer, objc.sel_registerName("setOpaque:"), true);
-
-    // 3. Setup Retina Scaling (ContentsScale)
-    const scale_sel = objc.sel_registerName("backingScaleFactor");
-    const GetFloatFn = *const fn (objc.ID, ?*objc.Sel) callconv(.c) f64;
-    const scale = @as(GetFloatFn, @ptrCast(&objc.objc_msgSend))(win_ptr, scale_sel);
-    msgSendSetFloat(layer, objc.sel_registerName("setContentsScale:"), scale);
-
-    // 4. Link to the View Hierarchy
-    const view = objc.objc_msgSend(win_ptr, objc.sel_registerName("contentView"));
-    msgSendSetPtr(view, objc.sel_registerName("setLayer:"), layer);
-    msgSendSetBool(view, objc.sel_registerName("setWantsLayer:"), true);
-
-    // 5. CRITICAL: Set the Frame
-    // If the frame is (0,0), nextDrawable().texture() will be null.
+    // Set the layer frame so nextDrawable returns a properly-sized texture.
     const NSRect = extern struct {
         origin: extern struct { x: f64, y: f64 },
         size: extern struct { width: f64, height: f64 },
     };
-
-    const bounds_sel = objc.sel_registerName("bounds");
-    const GetRectFn = *const fn (objc.ID, ?*objc.Sel) callconv(.c) NSRect;
-    const view_bounds = @as(GetRectFn, @ptrCast(&objc.objc_msgSend))(view, bounds_sel);
-
-    const SetRectFn = *const fn (objc.ID, ?*objc.Sel, NSRect) callconv(.c) void;
-    @as(SetRectFn, @ptrCast(&objc.objc_msgSend))(layer, objc.sel_registerName("setFrame:"), view_bounds);
+    const bounds = objc.send(NSRect, view, "bounds", .{});
+    objc.send(void, layer, "setFrame:", .{bounds});
 
     return .{ .ptr = layer };
 }
 
-pub const RenderPipelineState = struct {
-    ptr: objc.ID,
-};
+pub const RenderPipelineState = struct { ptr: objc.ID };
 
 pub const CommandQueue = struct {
     ptr: objc.ID,
 
     pub fn commandBuffer(self: CommandQueue) CommandBuffer {
-        return .{ .ptr = objc.objc_msgSend(self.ptr, objc.sel_registerName("commandBuffer")) };
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "commandBuffer", .{}) };
     }
 };
 
@@ -331,43 +232,27 @@ pub const RenderPassColorAttachmentDescriptor = struct {
     ptr: objc.ID,
 
     pub fn setTexture(self: RenderPassColorAttachmentDescriptor, texture: Texture) void {
-        const sel = objc.sel_registerName("setTexture:");
-
-        // Explicitly define the signature: (ID, Sel, ID)
-        const SetTexFn = *const fn (objc.ID, ?*objc.Sel, objc.ID) callconv(.c) void;
-        const msgSend: SetTexFn = @ptrCast(&objc.objc_msgSend);
-
-        msgSend(self.ptr, sel, texture.ptr);
+        objc.send(void, self.ptr, "setTexture:", .{texture.ptr});
     }
 
-    pub fn setLoadAction(self: RenderPassColorAttachmentDescriptor, load_action: LoadAction) void {
-        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("setLoadAction:"), @intFromEnum(load_action));
+    pub fn setLoadAction(self: RenderPassColorAttachmentDescriptor, action: LoadAction) void {
+        objc.send(void, self.ptr, "setLoadAction:", .{@intFromEnum(action)});
     }
 
-    pub fn setClearColor(self: RenderPassColorAttachmentDescriptor, clear_color: ClearColor) void {
-        const sel = objc.sel_registerName("setClearColor:");
-        const SetClearFn = *const fn (objc.ID, ?*objc.Sel, ClearColor) callconv(.c) void;
-        const msgSend: SetClearFn = @ptrCast(&objc.objc_msgSend);
-        msgSend(self.ptr, sel, clear_color);
+    pub fn setClearColor(self: RenderPassColorAttachmentDescriptor, color: ClearColor) void {
+        objc.send(void, self.ptr, "setClearColor:", .{color});
     }
 
-    pub fn setStoreAction(self: RenderPassColorAttachmentDescriptor, store_action: StoreAction) void {
-        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("setStoreAction:"), @intFromEnum(store_action));
+    pub fn setStoreAction(self: RenderPassColorAttachmentDescriptor, action: StoreAction) void {
+        objc.send(void, self.ptr, "setStoreAction:", .{@intFromEnum(action)});
     }
 };
 
 pub const RenderPassColorAttachmentDescriptorArray = struct {
     ptr: objc.ID,
 
-    /// Equivalent to desc->colorAttachments()->object(index)
     pub fn get(self: RenderPassColorAttachmentDescriptorArray, index: usize) RenderPassColorAttachmentDescriptor {
-        const sel = objc.sel_registerName("objectAtIndexedSubscript:");
-
-        // Explicit cast for the return and the index parameter
-        const GetObjFn = *const fn (objc.ID, ?*objc.Sel, usize) callconv(.c) objc.ID;
-        const msgSendGet: GetObjFn = @ptrCast(&objc.objc_msgSend);
-
-        return .{ .ptr = msgSendGet(self.ptr, sel, index) };
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "objectAtIndexedSubscript:", .{index}) };
     }
 };
 
@@ -375,13 +260,11 @@ pub const RenderPassDescriptor = struct {
     ptr: objc.ID,
 
     pub fn renderPassDescriptor() RenderPassDescriptor {
-        const class = objc.objc_getClass("MTLRenderPassDescriptor");
-        return .{ .ptr = objc.objc_msgSend(class, objc.sel_registerName("renderPassDescriptor")) };
+        return .{ .ptr = objc.send(objc.ID, objc.getClass("MTLRenderPassDescriptor"), "renderPassDescriptor", .{}) };
     }
 
     pub fn getColorAttachemnts(self: RenderPassDescriptor) RenderPassColorAttachmentDescriptorArray {
-        const array_ptr = objc.objc_msgSend(self.ptr, objc.sel_registerName("colorAttachments"));
-        return .{ .ptr = array_ptr };
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "colorAttachments", .{}) };
     }
 };
 
@@ -389,64 +272,43 @@ const CommandBuffer = struct {
     ptr: objc.ID,
 
     pub fn renderCommandEncoder(self: CommandBuffer, descriptor: RenderPassDescriptor) RenderCommandEncoder {
-        const sel = objc.sel_registerName("renderCommandEncoderWithDescriptor:");
-
-        // The signature: (CommandBufferPtr, Selector, DescriptorPtr) -> EncoderPtr
-        const CreateEncoderFn = *const fn (objc.ID, ?*objc.Sel, objc.ID) callconv(.c) objc.ID;
-        const msgSend: CreateEncoderFn = @ptrCast(&objc.objc_msgSend);
-
-        const encoder_ptr = msgSend(self.ptr, sel, descriptor.ptr);
-
-        return .{ .ptr = encoder_ptr };
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "renderCommandEncoderWithDescriptor:", .{descriptor.ptr}) };
     }
 
     pub fn presentDrawable(self: CommandBuffer, drawable: objc.ID) void {
-        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("presentDrawable:"), drawable);
+        objc.send(void, self.ptr, "presentDrawable:", .{drawable});
     }
 
     pub fn commit(self: CommandBuffer) void {
-        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("commit"));
+        objc.send(void, self.ptr, "commit", .{});
     }
 
     pub fn waitUntilCompleted(self: CommandBuffer) void {
-        _ = objc.objc_msgSend(self.ptr, objc.sel_registerName("waitUntilCompleted"));
+        objc.send(void, self.ptr, "waitUntilCompleted", .{});
     }
 };
 
 const RenderCommandEncoder = struct {
     ptr: objc.ID,
 
-    pub fn setRenderPipelineState(self: RenderCommandEncoder, pipelineState: RenderPipelineState) void {
-        const sel = objc.sel_registerName("setRenderPipelineState:");
-
-        // Signature: (EncoderPtr, Selector, PipelineStatePtr) -> void
-        const SetPsoFn = *const fn (objc.ID, ?*objc.Sel, objc.ID) callconv(.c) void;
-        const msgSend: SetPsoFn = @ptrCast(&objc.objc_msgSend);
-
-        msgSend(self.ptr, sel, pipelineState.ptr);
+    pub fn setRenderPipelineState(self: RenderCommandEncoder, state: RenderPipelineState) void {
+        objc.send(void, self.ptr, "setRenderPipelineState:", .{state.ptr});
     }
 
     pub fn setVertexBuffer(self: RenderCommandEncoder, buffer: Buffer) void {
-        const sel = objc.sel_registerName("setVertexBuffer:offset:atIndex:");
-        const SetVertexBufferFn = *const fn (?*anyopaque, ?*objc.Sel, ?*anyopaque, usize, usize) callconv(.c) void;
-        const msgSetVertexBuffer: SetVertexBufferFn = @ptrCast(&objc.objc_msgSend);
-        msgSetVertexBuffer(self.ptr, sel, buffer.ptr, 0, 0);
+        objc.send(void, self.ptr, "setVertexBuffer:offset:atIndex:", .{
+            buffer.ptr, @as(usize, 0), @as(usize, 0),
+        });
     }
 
     pub fn drawPrimitives(self: RenderCommandEncoder, primitive_type: PrimitiveType, vertex_start: usize, vertex_count: usize) void {
-        // The correct selector name:
-        const sel = objc.sel_registerName("drawPrimitives:vertexStart:vertexCount:");
-
-        // Signature: (self, _sel, type, start, count)
-        const DrawPrimitivesFn = *const fn (objc.ID, ?*objc.Sel, usize, usize, usize) callconv(.c) void;
-        const msgSend: DrawPrimitivesFn = @ptrCast(&objc.objc_msgSend);
-
-        msgSend(self.ptr, sel, @intFromEnum(primitive_type), vertex_start, vertex_count);
+        objc.send(void, self.ptr, "drawPrimitives:vertexStart:vertexCount:", .{
+            @intFromEnum(primitive_type), vertex_start, vertex_count,
+        });
     }
 
     pub fn endEncoding(self: RenderCommandEncoder) void {
-        const sel = objc.sel_registerName("endEncoding");
-        _ = objc.objc_msgSend(self.ptr, sel);
+        objc.send(void, self.ptr, "endEncoding", .{});
     }
 };
 
@@ -454,29 +316,19 @@ pub fn create_render_pipeline(device: Device) !RenderPipelineState {
     const library = Library.init(device);
     const vertex_shader = library.newFunction("vertexShader");
     const fragment_shader = library.newFunction("fragmentShader");
-    const pipeline_descriptor = RenderPipelineDescriptor.new();
-    pipeline_descriptor.setVertexFunction(vertex_shader);
-    pipeline_descriptor.setFragmentFunction(fragment_shader);
-    const color_attachments = pipeline_descriptor.getColorAttachemnts();
-    color_attachments.get(0).setPixelFormat(PixelFormat.bgra8_unorm);
-    return device.newRenderPipelineState(pipeline_descriptor);
+    const descriptor = RenderPipelineDescriptor.new();
+    descriptor.setVertexFunction(vertex_shader);
+    descriptor.setFragmentFunction(fragment_shader);
+    descriptor.getColorAttachemnts().get(0).setPixelFormat(PixelFormat.bgra8_unorm);
+    return device.newRenderPipelineState(descriptor);
 }
 
 pub const CaptureDescriptor = struct {
     pub fn init(device: objc.ID) objc.ID {
-        const class = objc.objc_getClass("MTLCaptureDescriptor");
-        const obj = objc.objc_msgSend(class, objc.sel_registerName("new"));
-
-        // setCaptureObject: (this is the device)
-        const setObjSel = objc.sel_registerName("setCaptureObject:");
-        const SetObjFn = *const fn (objc.ID, ?*objc.Sel, objc.ID) callconv(.c) void;
-        @as(SetObjFn, @ptrCast(&objc.objc_msgSend))(obj, setObjSel, device);
-
-        // setDestination: (1 = MTLCaptureDestinationGPUTraceDocument)
-        const setDestSel = objc.sel_registerName("setDestination:");
-        const SetDestFn = *const fn (objc.ID, ?*objc.Sel, usize) callconv(.c) void;
-        @as(SetDestFn, @ptrCast(&objc.objc_msgSend))(obj, setDestSel, 1);
-
+        const obj = objc.send(objc.ID, objc.getClass("MTLCaptureDescriptor"), "new", .{});
+        objc.send(void, obj, "setCaptureObject:", .{device});
+        // MTLCaptureDestinationGPUTraceDocument = 1
+        objc.send(void, obj, "setDestination:", .{@as(usize, 1)});
         return obj;
     }
 };

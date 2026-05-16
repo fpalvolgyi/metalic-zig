@@ -2,6 +2,7 @@ const std = @import("std");
 const appkit = @import("appkit.zig");
 const metal = @import("metal.zig");
 const objc = @import("obj_runtime.zig");
+const cv = @import("corevideo.zig");
 
 // ---------------------------------------------------------------------------
 // Global render state — populated in applicationDidFinishLaunching, read by
@@ -26,8 +27,7 @@ const triangle = [3]metal.Vertex{
 // NSApplicationDelegate callbacks
 // ---------------------------------------------------------------------------
 
-// "v@:@"  →  void  id(self)  SEL(_cmd)  id(notification)
-fn applicationDidFinishLaunching(self: objc.ID, _: ?*objc.Sel, _: objc.ID) callconv(.c) void {
+fn applicationDidFinishLaunching(_: objc.ID, _: ?*objc.Sel, _: objc.ID) callconv(.c) void {
     const win_rect = appkit.NSRect{ .x = 300, .y = 300, .w = 800, .h = 600 };
     const window = appkit.Window.init(win_rect);
     window.setTitle("Metal kernel");
@@ -49,13 +49,9 @@ fn applicationDidFinishLaunching(self: objc.ID, _: ?*objc.Sel, _: objc.ID) callc
 
     window.show();
 
-    // Re-activate after the window exists so it receives focus without
-    // requiring a dock click. The earlier activate in App.init fires before
-    // the run loop and window are ready.
-    const ns_app = objc.objc_getClass("NSApplication");
-    const shared = objc.objc_msgSend(ns_app, objc.sel_registerName("sharedApplication"));
-    const ActivateFn = *const fn (objc.ID, ?*objc.Sel, u8) callconv(.c) void;
-    @as(ActivateFn, @ptrCast(&objc.objc_msgSend))(shared, objc.sel_registerName("activateIgnoringOtherApps:"), 1);
+    // Activate after the window exists so it receives focus without a dock click.
+    objc.send(void, objc.send(objc.ID, objc.getClass("NSApplication"), "sharedApplication", .{}),
+        "activateIgnoringOtherApps:", .{@as(u8, 1)});
 
     g_render_state = .{
         .metal_layer = layer,
@@ -64,18 +60,24 @@ fn applicationDidFinishLaunching(self: objc.ID, _: ?*objc.Sel, _: objc.ID) callc
         .vertex_buffer = vertex_buffer,
     };
 
-    scheduleRenderTimer(self);
+    startDisplayLink();
 }
 
-// "B@:@"  →  BOOL  id(self)  SEL(_cmd)  id(sender)
 fn applicationShouldTerminateAfterLastWindowClosed(_: objc.ID, _: ?*objc.Sel, _: objc.ID) callconv(.c) bool {
     return true;
 }
 
-// "v@:@"  →  void  id(self)  SEL(_cmd)  id(timer)
-fn renderTick(_: objc.ID, _: ?*objc.Sel, _: objc.ID) callconv(.c) void {
-    const state = g_render_state orelse return;
+fn displayLinkCallback(
+    _: cv.CVDisplayLinkRef,
+    _: ?*const anyopaque,
+    _: ?*const anyopaque,
+    _: cv.CVOptionFlags,
+    _: ?*cv.CVOptionFlags,
+    _: ?*anyopaque,
+) callconv(.c) cv.CVReturn {
+    const state = g_render_state orelse return 0;
     drawFrame(state.metal_layer, state.command_queue, state.pipeline, state.vertex_buffer);
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,33 +85,23 @@ fn renderTick(_: objc.ID, _: ?*objc.Sel, _: objc.ID) callconv(.c) void {
 // ---------------------------------------------------------------------------
 
 fn registerDelegate() objc.ID {
-    const NSObject = objc.objc_getClass("NSObject");
-    const cls = objc.objc_allocateClassPair(NSObject, "AppDelegate", 0).?;
+    const cls = objc.objc_allocateClassPair(objc.getClass("NSObject"), "AppDelegate", 0).?;
 
     _ = objc.class_addMethod(cls, objc.sel_registerName("applicationDidFinishLaunching:"),
         @ptrCast(&applicationDidFinishLaunching), "v@:@");
     _ = objc.class_addMethod(cls, objc.sel_registerName("applicationShouldTerminateAfterLastWindowClosed:"),
         @ptrCast(&applicationShouldTerminateAfterLastWindowClosed), "B@:@");
-    _ = objc.class_addMethod(cls, objc.sel_registerName("renderTick:"),
-        @ptrCast(&renderTick), "v@:@");
 
     objc.objc_registerClassPair(cls);
 
-    return objc.objc_msgSend(cls, objc.sel_registerName("new"));
+    return objc.send(objc.ID, cls, "new", .{});
 }
 
-fn scheduleRenderTimer(delegate: objc.ID) void {
-    const NSTimer = objc.objc_getClass("NSTimer");
-    const sel = objc.sel_registerName("scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:");
-    const Fn = *const fn (objc.ID, ?*objc.Sel, f64, objc.ID, ?*objc.Sel, objc.ID, u8) callconv(.c) objc.ID;
-    _ = @as(Fn, @ptrCast(&objc.objc_msgSend))(
-        NSTimer, sel,
-        1.0 / 60.0,
-        delegate,
-        objc.sel_registerName("renderTick:"),
-        null,
-        1,
-    );
+fn startDisplayLink() void {
+    var link: cv.CVDisplayLinkRef = null;
+    _ = cv.CVDisplayLinkCreateWithActiveCGDisplays(&link);
+    _ = cv.CVDisplayLinkSetOutputCallback(link, &displayLinkCallback, null);
+    _ = cv.CVDisplayLinkStart(link);
 }
 
 // ---------------------------------------------------------------------------
