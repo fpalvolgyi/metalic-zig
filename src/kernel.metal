@@ -81,3 +81,51 @@ fragment float4 particleFragment(VertexOut in [[stage_in]],
     if (length(coord - 0.5) > 0.5) discard_fragment();
     return in.color;
 }
+
+// ---------------------------------------------------------------------------
+// UI — immediate-mode quad batcher
+// Layout must match Zig's UIVertex extern struct (32 bytes, no padding).
+// ---------------------------------------------------------------------------
+
+struct UIVertex {
+    float2 pos;    // pixel coords, top-left origin, y increases downward
+    float2 uv;
+    float4 color;
+};
+
+struct UIOut {
+    float4 position [[position]];
+    float2 uv;
+    float4 color;
+};
+
+struct ScreenSize {
+    float w;
+    float h;
+};
+
+vertex UIOut uiVertex(
+    uint              vid    [[vertex_id]],
+    constant UIVertex* verts [[buffer(0)]],
+    constant ScreenSize& screen [[buffer(1)]])
+{
+    UIVertex v = verts[vid];
+    // Pixel (top-left, y-down) → NDC (centre 0, y-up)
+    float x_ndc =  (v.pos.x / screen.w) * 2.0 - 1.0;
+    float y_ndc = -((v.pos.y / screen.h) * 2.0 - 1.0);
+    UIOut out;
+    out.position = float4(x_ndc, y_ndc, 0.0, 1.0);
+    out.uv       = v.uv;
+    out.color    = v.color;
+    return out;
+}
+
+fragment float4 uiFragment(
+    UIOut in [[stage_in]],
+    texture2d<float> atlas [[texture(0)]],
+    sampler smp [[sampler(0)]])
+{
+    // coverage=1 for solid rects (uv→white pixel), glyph alpha for text.
+    float coverage = atlas.sample(smp, in.uv).r;
+    return float4(in.color.rgb, in.color.a * coverage);
+}

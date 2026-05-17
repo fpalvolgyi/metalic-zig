@@ -11,10 +11,33 @@ pub const MTLSize = extern struct {
     depth: usize,
 };
 
+pub const MTLOrigin = extern struct { x: usize, y: usize, z: usize };
+pub const MTLRegion = extern struct { origin: MTLOrigin, size: MTLSize };
+
 pub const MTLStorageMode = enum(usize) { MTLResourceStorageModeShared = 0 };
 pub const PrimitiveType = enum(usize) { Point = 0, Line = 1, LineStrip = 2, Triangle = 3, TriangleStrip = 4 };
+pub const BlendFactor = enum(usize) {
+    Zero                = 0,
+    One                 = 1,
+    SourceAlpha         = 4,
+    OneMinusSourceAlpha = 5,
+};
 
-pub const Buffer = struct { ptr: objc.ID };
+pub const Buffer = struct {
+    ptr: objc.ID,
+
+    pub fn contents(self: Buffer) ?*anyopaque {
+        return objc.send(?*anyopaque, self.ptr, "contents", .{});
+    }
+
+    // Creates a texture that directly references this buffer's memory.
+    // Avoids replaceRegion's large-struct ABI pitfalls.
+    pub fn newTextureWithDescriptor(self: Buffer, desc: TextureDescriptor, offset: usize, bytes_per_row: usize) Texture {
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "newTextureWithDescriptor:offset:bytesPerRow:", .{
+            desc.ptr, offset, bytes_per_row,
+        }) };
+    }
+};
 
 pub const Device = struct {
     ptr: objc.ID,
@@ -25,6 +48,13 @@ pub const Device = struct {
         return .{ .ptr = dev };
     }
 
+    pub fn newBufferWithLength(self: Device, len: usize, storage_mode: MTLStorageMode) Buffer {
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "newBufferWithLength:options:", .{
+            len,
+            @intFromEnum(storage_mode),
+        }) };
+    }
+
     /// Copy `data` (any slice) into a new Metal buffer.
     pub fn newBufferWithBytes(self: Device, data: anytype, storage_mode: MTLStorageMode) Buffer {
         const T = @typeInfo(@TypeOf(data)).pointer.child;
@@ -33,6 +63,17 @@ pub const Device = struct {
             data.len * @sizeOf(T),
             @intFromEnum(storage_mode),
         }) };
+    }
+
+    pub fn newTextureWithDescriptor(self: Device, desc: TextureDescriptor) Texture {
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "newTextureWithDescriptor:", .{desc.ptr}) };
+    }
+
+    pub fn newLinearSampler(self: Device) SamplerState {
+        const desc = objc.send(objc.ID, objc.getClass("MTLSamplerDescriptor"), "new", .{});
+        objc.send(void, desc, "setMinFilter:", .{@as(usize, 1)}); // MTLSamplerMinMagFilterLinear
+        objc.send(void, desc, "setMagFilter:", .{@as(usize, 1)});
+        return .{ .ptr = objc.send(objc.ID, self.ptr, "newSamplerStateWithDescriptor:", .{desc}) };
     }
 
     pub fn newCommandQueue(self: Device) CommandQueue {
@@ -147,9 +188,49 @@ pub const RenderPipelineColorAttachmentDescriptor = struct {
     pub fn setPixelFormat(self: RenderPipelineColorAttachmentDescriptor, format: PixelFormat) void {
         objc.send(void, self.ptr, "setPixelFormat:", .{@intFromEnum(format)});
     }
+
+    pub fn setBlendingEnabled(self: RenderPipelineColorAttachmentDescriptor, enabled: bool) void {
+        objc.send(void, self.ptr, "setBlendingEnabled:", .{@as(u8, if (enabled) 1 else 0)});
+    }
+
+    pub fn setSourceRGBBlendFactor(self: RenderPipelineColorAttachmentDescriptor, factor: BlendFactor) void {
+        objc.send(void, self.ptr, "setSourceRGBBlendFactor:", .{@intFromEnum(factor)});
+    }
+
+    pub fn setDestinationRGBBlendFactor(self: RenderPipelineColorAttachmentDescriptor, factor: BlendFactor) void {
+        objc.send(void, self.ptr, "setDestinationRGBBlendFactor:", .{@intFromEnum(factor)});
+    }
+
+    pub fn setSourceAlphaBlendFactor(self: RenderPipelineColorAttachmentDescriptor, factor: BlendFactor) void {
+        objc.send(void, self.ptr, "setSourceAlphaBlendFactor:", .{@intFromEnum(factor)});
+    }
+
+    pub fn setDestinationAlphaBlendFactor(self: RenderPipelineColorAttachmentDescriptor, factor: BlendFactor) void {
+        objc.send(void, self.ptr, "setDestinationAlphaBlendFactor:", .{@intFromEnum(factor)});
+    }
 };
 
-pub const Texture = struct { ptr: objc.ID };
+pub const SamplerState = struct { ptr: objc.ID };
+
+pub const TextureDescriptor = struct {
+    ptr: objc.ID,
+
+    pub fn texture2D(format: PixelFormat, width: usize, height: usize) TextureDescriptor {
+        return .{ .ptr = objc.send(objc.ID, objc.getClass("MTLTextureDescriptor"),
+            "texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
+            .{ @intFromEnum(format), width, height, @as(u8, 0) }) };
+    }
+};
+
+pub const Texture = struct {
+    ptr: objc.ID,
+
+    pub fn replaceRegion(self: Texture, region: MTLRegion, mip: usize, data: *const anyopaque, bytes_per_row: usize) void {
+        objc.send(void, self.ptr, "replaceRegion:mipmapLevel:withBytes:bytesPerRow:", .{
+            region, mip, data, bytes_per_row,
+        });
+    }
+};
 
 pub const Drawable = struct {
     ptr: objc.ID,
@@ -327,9 +408,17 @@ pub const RenderCommandEncoder = struct {
         objc.send(void, self.ptr, "setRenderPipelineState:", .{state.ptr});
     }
 
-    pub fn setVertexBuffer(self: RenderCommandEncoder, buffer: Buffer) void {
+    pub fn setVertexBufferAt(self: RenderCommandEncoder, buffer: Buffer, index: usize) void {
         objc.send(void, self.ptr, "setVertexBuffer:offset:atIndex:", .{
-            buffer.ptr, @as(usize, 0), @as(usize, 0),
+            buffer.ptr, @as(usize, 0), index,
+        });
+    }
+
+    pub fn setVertexBytes(self: RenderCommandEncoder, comptime T: type, data: *const T, index: usize) void {
+        objc.send(void, self.ptr, "setVertexBytes:length:atIndex:", .{
+            @as(?*const anyopaque, @ptrCast(data)),
+            @as(usize, @sizeOf(T)),
+            index,
         });
     }
 
@@ -337,6 +426,14 @@ pub const RenderCommandEncoder = struct {
         objc.send(void, self.ptr, "drawPrimitives:vertexStart:vertexCount:", .{
             @intFromEnum(primitive_type), vertex_start, vertex_count,
         });
+    }
+
+    pub fn setFragmentTexture(self: RenderCommandEncoder, texture: Texture, index: usize) void {
+        objc.send(void, self.ptr, "setFragmentTexture:atIndex:", .{ texture.ptr, index });
+    }
+
+    pub fn setFragmentSamplerState(self: RenderCommandEncoder, sampler: SamplerState, index: usize) void {
+        objc.send(void, self.ptr, "setFragmentSamplerState:atIndex:", .{ sampler.ptr, index });
     }
 
     pub fn endEncoding(self: RenderCommandEncoder) void {
@@ -352,6 +449,23 @@ pub fn create_render_pipeline(device: Device, vertex_name: [:0]const u8, fragmen
     descriptor.setVertexFunction(vertex_shader);
     descriptor.setFragmentFunction(fragment_shader);
     descriptor.getColorAttachemnts().get(0).setPixelFormat(PixelFormat.bgra8_unorm);
+    return device.newRenderPipelineState(descriptor);
+}
+
+pub fn create_ui_render_pipeline(device: Device) !RenderPipelineState {
+    const library = Library.init(device);
+    const vertex_shader   = library.newFunction("uiVertex");
+    const fragment_shader = library.newFunction("uiFragment");
+    const descriptor = RenderPipelineDescriptor.new();
+    descriptor.setVertexFunction(vertex_shader);
+    descriptor.setFragmentFunction(fragment_shader);
+    const ca = descriptor.getColorAttachemnts().get(0);
+    ca.setPixelFormat(PixelFormat.bgra8_unorm);
+    ca.setBlendingEnabled(true);
+    ca.setSourceRGBBlendFactor(.SourceAlpha);
+    ca.setDestinationRGBBlendFactor(.OneMinusSourceAlpha);
+    ca.setSourceAlphaBlendFactor(.One);
+    ca.setDestinationAlphaBlendFactor(.OneMinusSourceAlpha);
     return device.newRenderPipelineState(descriptor);
 }
 

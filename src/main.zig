@@ -3,6 +3,8 @@ const appkit = @import("appkit.zig");
 const metal = @import("metal.zig");
 const objc = @import("obj_runtime.zig");
 const cv = @import("corevideo.zig");
+const ui   = @import("ui.zig");
+const font = @import("font.zig");
 
 // ---------------------------------------------------------------------------
 // Particle — layout must match the Metal shader struct exactly.
@@ -28,12 +30,19 @@ const THREAD_GROUP_WIDTH: usize = 64;
 // ---------------------------------------------------------------------------
 
 const RenderState = struct {
-    metal_layer: metal.MetalLayer,
-    command_queue: metal.CommandQueue,
-    render_pipeline: metal.RenderPipelineState,
+    metal_layer:      metal.MetalLayer,
+    command_queue:    metal.CommandQueue,
+    render_pipeline:  metal.RenderPipelineState,
     compute_pipeline: metal.ComputePipelineState,
-    particle_buffer: metal.Buffer,
-    window: objc.ID,
+    particle_buffer:  metal.Buffer,
+    window:           objc.ID,
+    ui_pipeline:      metal.RenderPipelineState,
+    ui_vertex_buffer: metal.Buffer,
+    ui_sampler:       metal.SamplerState,
+    batcher:          ui.QuadBatcher,
+    font_atlas:       font.FontAtlas,
+    screen_w:         f32,
+    screen_h:         f32,
 };
 
 var g_render_state: ?RenderState = null;
@@ -84,6 +93,13 @@ fn setup() !void {
         objc.send(objc.ID, objc.getClass("NSApplication"), "sharedApplication", .{}),
         "activateIgnoringOtherApps:", .{@as(u8, 1)});
 
+    const ui_pipeline      = try metal.create_ui_render_pipeline(device);
+    const ui_vertex_buffer = device.newBufferWithLength(
+        @sizeOf(ui.UIVertex) * ui.MAX_VERTICES, .MTLResourceStorageModeShared,
+    );
+    const ui_sampler  = device.newLinearSampler();
+    const font_atlas  = try font.bake(device, "Menlo");
+
     g_render_state = .{
         .metal_layer      = layer,
         .command_queue    = command_queue,
@@ -91,6 +107,13 @@ fn setup() !void {
         .compute_pipeline = compute_pipeline,
         .particle_buffer  = particle_buffer,
         .window           = window.ptr,
+        .ui_pipeline      = ui_pipeline,
+        .ui_vertex_buffer = ui_vertex_buffer,
+        .ui_sampler       = ui_sampler,
+        .batcher          = .{},
+        .font_atlas       = font_atlas,
+        .screen_w         = 800.0,
+        .screen_h         = 600.0,
     };
 
     startDisplayLink();
@@ -108,8 +131,8 @@ fn displayLinkCallback(
     _: ?*cv.CVOptionFlags,
     _: ?*anyopaque,
 ) callconv(.c) cv.CVReturn {
-    const state = g_render_state orelse return 0;
-    drawFrame(state);
+    if (g_render_state == null) return 0;
+    drawFrame(&g_render_state.?);
     return 0;
 }
 
@@ -166,16 +189,61 @@ fn mousePosNDC(window: objc.ID) [2]f32 {
     return .{ x, y };
 }
 
-fn drawFrame(state: RenderState) void {
+fn drawFrame(state: *RenderState) void {
+    // Build UI for this frame.
+    state.batcher.reset();
+    const mouse_ndc = mousePosNDC(state.window);
+    const mouse_px_x = (mouse_ndc[0] + 1.0) / 2.0 * state.screen_w;
+    const mouse_px_y = (1.0 - mouse_ndc[1]) / 2.0 * state.screen_h;
+    const atlas = &state.font_atlas;
+
+    // HUD panel.
+    state.batcher.fillRect(.{ .x = 10, .y = 10, .w = 210, .h = 82 },
+        .{ .r = 0.05, .g = 0.05, .b = 0.12, .a = 0.85 });
+
+    // Stat bars with labels.
+    const label_x: f32 = 20;
+    const bar_x:   f32 = 80;
+    const white = ui.Color{ .r = 0.9, .g = 0.9, .b = 0.9, .a = 1 };
+
+    state.batcher.drawText("Health", label_x, 34, white, atlas);
+    state.batcher.fillRect(.{ .x = bar_x, .y = 24, .w = 90,  .h = 10 }, .{ .r = 0.85, .g = 0.25, .b = 0.25, .a = 1 });
+
+    state.batcher.drawText("Speed",  label_x, 52, white, atlas);
+    state.batcher.fillRect(.{ .x = bar_x, .y = 42, .w = 130, .h = 10 }, .{ .r = 0.25, .g = 0.75, .b = 0.35, .a = 1 });
+
+    state.batcher.drawText("Energy", label_x, 70, white, atlas);
+    state.batcher.fillRect(.{ .x = bar_x, .y = 60, .w = 55,  .h = 10 }, .{ .r = 0.25, .g = 0.50, .b = 0.95, .a = 1 });
+
+    // Button (bottom-left) that highlights on hover.
+    const btn = ui.Rect{ .x = 10, .y = state.screen_h - 50, .w = 120, .h = 36 };
+    const hovered = btn.contains(mouse_px_x, mouse_px_y);
+    const fill: ui.Color = if (hovered)
+        .{ .r = 0.30, .g = 0.52, .b = 0.95, .a = 1 }
+    else
+        .{ .r = 0.18, .g = 0.38, .b = 0.80, .a = 1 };
+    state.batcher.button(btn, fill, .{ .r = 0.60, .g = 0.78, .b = 1.0, .a = 1 });
+    // Baseline is midpoint of button + ascent offset.
+    state.batcher.drawText("Reset", btn.x + 22, btn.y + 23, white, atlas);
+
+    // Upload UI vertices to shared GPU buffer.
+    if (state.batcher.count > 0) {
+        const dst = state.ui_vertex_buffer.contents() orelse unreachable;
+        const byte_len = state.batcher.count * @sizeOf(ui.UIVertex);
+        @memcpy(
+            @as([*]u8, @ptrCast(dst))[0..byte_len],
+            @as([*]const u8, @ptrCast(&state.batcher.vertices))[0..byte_len],
+        );
+    }
+
     const cmd = state.command_queue.commandBuffer();
 
-    // Compute pass — update particle positions on the GPU.
+    // Compute pass — GPU particle physics.
     const mouse = MouseUniforms{
-        .pos      = mousePosNDC(state.window),
+        .pos      = mouse_ndc,
         .radius   = 0.15,
         .strength = 0.04,
     };
-
     const compute_enc = cmd.computeCommandEncoder();
     compute_enc.setComputePipelineState(state.compute_pipeline);
     compute_enc.setBuffer(state.particle_buffer, 0, 0);
@@ -186,7 +254,7 @@ fn drawFrame(state: RenderState) void {
     );
     compute_enc.endEncoding();
 
-    // Render pass — draw each particle as a coloured circle.
+    // Render pass — particles then UI, in one pass.
     const drawable = state.metal_layer.nextDrawable();
     const pass = metal.RenderPassDescriptor.renderPassDescriptor();
     const ca = pass.getColorAttachemnts().get(0);
@@ -196,11 +264,22 @@ fn drawFrame(state: RenderState) void {
     ca.setStoreAction(.StoreActionStore);
 
     const render_enc = cmd.renderCommandEncoder(pass);
-    render_enc.setRenderPipelineState(state.render_pipeline);
-    render_enc.setVertexBuffer(state.particle_buffer);
-    render_enc.drawPrimitives(.Point, 0, PARTICLE_COUNT);
-    render_enc.endEncoding();
 
+    render_enc.setRenderPipelineState(state.render_pipeline);
+    render_enc.setVertexBufferAt(state.particle_buffer, 0);
+    render_enc.drawPrimitives(.Point, 0, PARTICLE_COUNT);
+
+    if (state.batcher.count > 0) {
+        const screen = ui.ScreenSize{ .w = state.screen_w, .h = state.screen_h };
+        render_enc.setRenderPipelineState(state.ui_pipeline);
+        render_enc.setVertexBufferAt(state.ui_vertex_buffer, 0);
+        render_enc.setVertexBytes(ui.ScreenSize, &screen, 1);
+        render_enc.setFragmentTexture(state.font_atlas.texture, 0);
+        render_enc.setFragmentSamplerState(state.ui_sampler, 0);
+        render_enc.drawPrimitives(.Triangle, 0, state.batcher.count);
+    }
+
+    render_enc.endEncoding();
     cmd.presentDrawable(drawable.ptr);
     cmd.commit();
 }
