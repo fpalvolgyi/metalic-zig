@@ -1,5 +1,4 @@
 const std = @import("std");
-const compile_flagz = @import("compile_flagz");
 
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
@@ -66,17 +65,16 @@ pub fn build(b: *std.Build) void {
         .root_module = mod,
     });
 
-    exe.linkFramework("AppKit");
-    exe.linkFramework("Foundation");
-    exe.linkFramework("Metal");
-    exe.linkFramework("QuartzCore"); // For CAMetalLayer
-    exe.linkFramework("CoreVideo");   // For CVDisplayLink
-    exe.linkFramework("CoreText");    // For font atlas baking
-    exe.linkFramework("CoreGraphics"); // For CGBitmapContext
-    exe.linkSystemLibrary("objc");
-
-    exe.linkLibC();
-    exe.linkLibCpp();
+    mod.linkFramework("AppKit", .{});
+    mod.linkFramework("Foundation", .{});
+    mod.linkFramework("Metal", .{});
+    mod.linkFramework("QuartzCore", .{});
+    mod.linkFramework("CoreVideo", .{});
+    mod.linkFramework("CoreText", .{});
+    mod.linkFramework("CoreGraphics", .{});
+    mod.linkSystemLibrary("objc", .{});
+    mod.link_libc = true;
+    mod.link_libcpp = true;
 
     const compile_shaders = b.addSystemCommand(&.{
         "xcrun", "-sdk",             "macosx",           "metal",

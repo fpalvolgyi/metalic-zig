@@ -52,12 +52,13 @@ pub const QuadBatcher = struct {
         const y0 = rect.y;
         const x1 = rect.x + rect.w;
         const y1 = rect.y + rect.h;
+        // All UVs point to the sentinel pixel (0,0) which has SDF=1.0 → coverage=1.
         self.vertices[self.count + 0] = .{ .pos = .{ x0, y0 }, .uv = .{ 0, 0 }, .color = c };
-        self.vertices[self.count + 1] = .{ .pos = .{ x1, y0 }, .uv = .{ 1, 0 }, .color = c };
-        self.vertices[self.count + 2] = .{ .pos = .{ x0, y1 }, .uv = .{ 0, 1 }, .color = c };
-        self.vertices[self.count + 3] = .{ .pos = .{ x1, y0 }, .uv = .{ 1, 0 }, .color = c };
-        self.vertices[self.count + 4] = .{ .pos = .{ x1, y1 }, .uv = .{ 1, 1 }, .color = c };
-        self.vertices[self.count + 5] = .{ .pos = .{ x0, y1 }, .uv = .{ 0, 1 }, .color = c };
+        self.vertices[self.count + 1] = .{ .pos = .{ x1, y0 }, .uv = .{ 0, 0 }, .color = c };
+        self.vertices[self.count + 2] = .{ .pos = .{ x0, y1 }, .uv = .{ 0, 0 }, .color = c };
+        self.vertices[self.count + 3] = .{ .pos = .{ x1, y0 }, .uv = .{ 0, 0 }, .color = c };
+        self.vertices[self.count + 4] = .{ .pos = .{ x1, y1 }, .uv = .{ 0, 0 }, .color = c };
+        self.vertices[self.count + 5] = .{ .pos = .{ x0, y1 }, .uv = .{ 0, 0 }, .color = c };
         self.count += 6;
     }
 

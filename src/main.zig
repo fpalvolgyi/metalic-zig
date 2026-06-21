@@ -1,4 +1,5 @@
 const std = @import("std");
+extern fn arc4random() u32;
 const appkit = @import("appkit.zig");
 const metal = @import("metal.zig");
 const objc = @import("obj_runtime.zig");
@@ -78,7 +79,8 @@ fn setup() !void {
     const particles = try std.heap.page_allocator.alloc(Particle, PARTICLE_COUNT);
     defer std.heap.page_allocator.free(particles);
 
-    var prng = std.Random.DefaultPrng.init(@bitCast(std.time.milliTimestamp()));
+    const seed = @as(u64, arc4random()) << 32 | arc4random();
+    var prng = std.Random.DefaultPrng.init(seed);
     const rand = prng.random();
     for (particles) |*p| {
         p.position = .{ rand.float(f32) * 2.0 - 1.0, rand.float(f32) * 2.0 - 1.0 };

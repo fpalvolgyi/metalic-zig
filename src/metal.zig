@@ -220,6 +220,10 @@ pub const TextureDescriptor = struct {
             "texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
             .{ @intFromEnum(format), width, height, @as(u8, 0) }) };
     }
+
+    pub fn setUsage(self: TextureDescriptor, usage: usize) void {
+        objc.send(void, self.ptr, "setUsage:", .{usage});
+    }
 };
 
 pub const Texture = struct {

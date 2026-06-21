@@ -125,7 +125,8 @@ fragment float4 uiFragment(
     texture2d<float> atlas [[texture(0)]],
     sampler smp [[sampler(0)]])
 {
-    // coverage=1 for solid rects (uv→white pixel), glyph alpha for text.
-    float coverage = atlas.sample(smp, in.uv).r;
+    float dist = atlas.sample(smp, in.uv).r;
+    float aa   = fwidth(dist) * 0.7;
+    float coverage = smoothstep(0.5 - aa, 0.5 + aa, dist);
     return float4(in.color.rgb, in.color.a * coverage);
 }
